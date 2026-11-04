@@ -1,0 +1,8 @@
+{
+  "id": "light",
+  "name": "灯",
+  "version": "1.0.11",
+  "kind": "device",
+  "type": "light",
+  "description": "7 种灯型（平板/圆形吸顶、筒灯、壁灯、吊灯、落地灯、灯带）。静态灯体可为 GLB，动态部分（灯泡发光、光晕、点光源）随实体 on/off 与 rgb_color 变化"
+}

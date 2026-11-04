@@ -1,0 +1,8 @@
+{
+  "id": "sensor",
+  "name": "传感器",
+  "version": "1.0.10",
+  "kind": "device",
+  "type": "sensor",
+  "description": "温湿度圆饼与人体存在传感器，触发（on）时状态灯亮起并呼吸闪烁"
+}

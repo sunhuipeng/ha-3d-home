@@ -1,0 +1,8 @@
+{
+  "id": "fan",
+  "name": "风扇",
+  "version": "1.0.10",
+  "kind": "device",
+  "type": "fan",
+  "description": "落地扇，开启时扇叶持续旋转（转速随 percentage/percentage_steps 属性可选）"
+}

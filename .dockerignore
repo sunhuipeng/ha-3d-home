@@ -1,0 +1,12 @@
+# 构建上下文排除项（镜像只带程序与自带资产）
+.git
+.gitignore
+node_modules
+data
+*.log
+.DS_Store
+**/.DS_Store
+# 打包产物不进镜像
+dist/
+# 用户自定义资产不进镜像（走 /custom 挂载）
+custom/

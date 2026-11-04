@@ -1,0 +1,8 @@
+{
+  "id": "water_heater",
+  "name": "热水器",
+  "version": "1.0.9",
+  "kind": "device",
+  "type": "water_heater",
+  "description": "电热水器: 立式水箱(代码建模) + Canvas 温度显示屏（当前温度/目标温度实时刷新），state=on 开机，attributes.heating=true 加热指示灯呼吸，min_temp/max_temp 限定显示范围"
+}

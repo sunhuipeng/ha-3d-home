@@ -1,0 +1,342 @@
+{
+  "name": "我的家",
+  "floors": [
+    {
+      "id": "s1",
+      "name": "一层",
+      "height": 2.8,
+      "walls": [
+        {
+          "id": "s2",
+          "x1": 0,
+          "y1": 0,
+          "x2": 10,
+          "y2": 0,
+          "t": 0.24
+        },
+        {
+          "id": "s3",
+          "x1": 10,
+          "y1": 0,
+          "x2": 10,
+          "y2": 8,
+          "t": 0.24
+        },
+        {
+          "id": "s4",
+          "x1": 10,
+          "y1": 8,
+          "x2": 0,
+          "y2": 8,
+          "t": 0.24
+        },
+        {
+          "id": "s5",
+          "x1": 0,
+          "y1": 8,
+          "x2": 0,
+          "y2": 0,
+          "t": 0.24
+        },
+        {
+          "id": "s6",
+          "x1": 0,
+          "y1": 4.8,
+          "x2": 4.6,
+          "y2": 4.8,
+          "t": 0.24
+        },
+        {
+          "id": "s7",
+          "x1": 4.6,
+          "y1": 8,
+          "x2": 4.6,
+          "y2": 4.8,
+          "t": 0.24
+        },
+        {
+          "id": "s8",
+          "x1": 6.2,
+          "y1": 4.8,
+          "x2": 10,
+          "y2": 4.8,
+          "t": 0.24
+        },
+        {
+          "id": "s9",
+          "x1": 6.2,
+          "y1": 4.8,
+          "x2": 6.2,
+          "y2": 2.2,
+          "t": 0.24
+        },
+        {
+          "id": "sa",
+          "x1": 6.2,
+          "y1": 2.2,
+          "x2": 8,
+          "y2": 2.2,
+          "t": 0.24
+        },
+        {
+          "id": "sb",
+          "x1": 8,
+          "y1": 0,
+          "x2": 8,
+          "y2": 2.2,
+          "t": 0.24
+        }
+      ],
+      "doors": [
+        {
+          "id": "sc",
+          "x": 4.6,
+          "y": 5.6,
+          "w": 0.9,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "sd",
+          "x": 6.2,
+          "y": 3.2,
+          "w": 0.85,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "se",
+          "x": 7,
+          "y": 2.2,
+          "w": 0.8,
+          "rot": 0
+        },
+        {
+          "id": "sf",
+          "x": 2.5,
+          "y": 0,
+          "w": 1,
+          "rot": 0
+        }
+      ],
+      "windows": [
+        {
+          "id": "sg",
+          "x": 1.5,
+          "y": 0,
+          "w": 1.8,
+          "rot": 0
+        },
+        {
+          "id": "sh",
+          "x": 5,
+          "y": 8,
+          "w": 1.6,
+          "rot": 0
+        },
+        {
+          "id": "si",
+          "x": 10,
+          "y": 3.4,
+          "w": 1.6,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "sj",
+          "x": 0,
+          "y": 2.4,
+          "w": 1.6,
+          "rot": 1.5707963267948966
+        }
+      ],
+      "furniture": [
+        {
+          "id": "sk",
+          "type": "sofa",
+          "mid": "sofa",
+          "model": "/assets/models/sofa.glb",
+          "name": "三人沙发",
+          "w": 2.2,
+          "d": 0.9,
+          "h": 0.75,
+          "color": "#c9a26e",
+          "x": 3.2,
+          "y": 3.9,
+          "rot": 0
+        },
+        {
+          "id": "sl",
+          "type": "table",
+          "mid": "teatable",
+          "model": "/assets/models/teatable.glb",
+          "name": "茶几",
+          "w": 1,
+          "d": 0.55,
+          "h": 0.4,
+          "color": "#a98457",
+          "x": 3.2,
+          "y": 2.7,
+          "rot": 0
+        },
+        {
+          "id": "sm",
+          "type": "cabinet",
+          "mid": "tvstand",
+          "model": "/assets/models/tvstand.glb",
+          "name": "电视柜",
+          "w": 1.8,
+          "d": 0.38,
+          "h": 0.45,
+          "color": "#8f7b5e",
+          "x": 3.2,
+          "y": 0.35,
+          "rot": 0
+        },
+        {
+          "id": "sn",
+          "type": "table",
+          "mid": "dining",
+          "model": "/assets/models/dining.glb",
+          "name": "餐桌",
+          "w": 1.4,
+          "d": 0.82,
+          "h": 0.74,
+          "color": "#c98d5e",
+          "x": 1.2,
+          "y": 1.4,
+          "rot": 0
+        },
+        {
+          "id": "so",
+          "type": "bed",
+          "mid": "bed",
+          "model": "/assets/models/bed.glb",
+          "name": "双人床",
+          "w": 1.8,
+          "d": 2,
+          "h": 0.5,
+          "color": "#b7c6d9",
+          "x": 1.6,
+          "y": 6.4,
+          "rot": 0
+        },
+        {
+          "id": "sp",
+          "type": "table",
+          "mid": "nightstand",
+          "model": "/assets/models/nightstand.glb",
+          "name": "床头柜",
+          "w": 0.5,
+          "d": 0.42,
+          "h": 0.5,
+          "color": "#c4ad87",
+          "x": 3.1,
+          "y": 5.5,
+          "rot": 0
+        },
+        {
+          "id": "sq",
+          "type": "cabinet",
+          "mid": "wardrobe",
+          "model": "/assets/models/wardrobe.glb",
+          "name": "衣柜",
+          "w": 1.4,
+          "d": 0.6,
+          "h": 2.1,
+          "color": "#d9c8ae",
+          "x": 3.9,
+          "y": 7.6,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "sr",
+          "type": "table",
+          "mid": "desk",
+          "model": "/assets/models/desk.glb",
+          "name": "书桌",
+          "w": 1.2,
+          "d": 0.6,
+          "h": 0.74,
+          "color": "#a98457",
+          "x": 7.4,
+          "y": 4.2,
+          "rot": 0
+        },
+        {
+          "id": "ss",
+          "type": "cabinet",
+          "mid": "bookshelf",
+          "model": "/assets/models/bookshelf.glb",
+          "name": "书架",
+          "w": 1.1,
+          "d": 0.32,
+          "h": 1.9,
+          "color": "#b59a72",
+          "x": 9.6,
+          "y": 4.3,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "st",
+          "type": "bath",
+          "mid": "toilet",
+          "model": "/assets/models/toilet.glb",
+          "name": "马桶",
+          "w": 0.4,
+          "d": 0.65,
+          "h": 0.75,
+          "color": "#e8ecf1",
+          "x": 6.8,
+          "y": 1.5,
+          "rot": 0
+        },
+        {
+          "id": "su",
+          "type": "bath",
+          "mid": "sink",
+          "model": "/assets/models/sink.glb",
+          "name": "洗手台",
+          "w": 0.8,
+          "d": 0.5,
+          "h": 0.82,
+          "color": "#e8ecf1",
+          "x": 7.8,
+          "y": 0.5,
+          "rot": 1.5707963267948966
+        },
+        {
+          "id": "sv",
+          "type": "cabinet",
+          "mid": "cabinet",
+          "model": "/assets/models/cabinet.glb",
+          "name": "橱柜",
+          "w": 1.6,
+          "d": 0.6,
+          "h": 0.85,
+          "color": "#d5c4a8",
+          "x": 8.9,
+          "y": 0.4,
+          "rot": 0
+        },
+        {
+          "id": "sw",
+          "type": "kitchen",
+          "mid": "stove",
+          "model": "/assets/models/stove.glb",
+          "name": "燃气灶",
+          "w": 0.72,
+          "d": 0.52,
+          "h": 0.9,
+          "color": "#7c8792",
+          "x": 9.6,
+          "y": 0.9,
+          "rot": 0
+        }
+      ],
+      "devices": []
+    }
+  ],
+  "settings": {
+    "weatherEntity": "",
+    "dataCards": [],
+    "background": ""
+  }
+}

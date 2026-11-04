@@ -1,0 +1,203 @@
+# HA 3D Home · 全屋智能 3D 可视化
+
+轻量级 Home Assistant 3D 户型可视化控制中心：**绘制户型 → 摆放家具 → 绑定设备 → 3D 实时展示与控制**。
+
+> 🔗 **项目介绍主页**：<https://sunhuipeng.github.io/ha3d-site/> —— 功能演示、截图与使用说明都在这里，想先了解这个项目是什么，从这一页看起最快。
+>
+> 📘 **开发文档**：[插件开发手册 · PLUGIN-DEV.md](PLUGIN-DEV.md)　·　[插件目录规范](assets/plugins/README.md)　·　详见 [插件开发](#插件开发)
+
+**快速导航**：[功能](#功能) · [插件开发](#插件开发) · [架构](#架构) · [Docker 部署](#docker-部署) · [自定义资产](#自定义资产custom-目录) · [目录](#目录)
+
+**插件化 · 全自定义 · 零侵入**——从设备造型、地面背景到门窗动画，一切 3D 表现都是插件；模型、清单、插件三个层级都支持「内置 + 自定义」双目录合并，同 id 自定义覆盖内置，不改一行代码就能换掉任何东西。
+
+
+
+## 功能
+
+- 📐 **2D 户型编辑器**：墙体绘制（0.1m 网格吸附、实时长度）、门/窗、家具库（7 类型 × 任意形态，assets 目录动态扩展）、设备点位
+- 🛋 **家具摆放**：拖拽移动、旋转、调 X/Y/离地高度/整体比例（滑条实时预览 2D + 3D），同一类型可切换不同形态模型（GLB）；模型放 `assets/models/` 并在 `assets/catalog.json` 声明，重启即出现在家具库
+- 📡 **对接 Home Assistant**：浏览器**直连** HA WebSocket（`subscribe_entities` 实时推送，零延迟），支持灯光/开关/传感器/空调/窗帘/风扇等实体
+- 🏠 **3D 展示**：Three.js 渲染墙体/门窗/家具/吊灯，灯具开灯发光、彩色灯支持，点击设备直接控制，楼层切换
+- 📊 **实时数据**：天气 HUD（温度/湿度/天气现象）、可配置数据卡片、设备状态标签实时刷新、悬停查看状态
+- 🖥 **大屏展示页**（`display.html`）：只读展示 + 场景一键执行（执行回执 ✓/已发送）、快捷设备两列开关、楼层记忆、自动旋转、相机取景记忆（拖动后刷新自动恢复）
+- 🧩 **全插件化 3D 表现**：设备造型/门窗动画/地面背景都是独立插件（内置 13 个：门、窗、灯、开关、空调、窗帘、风扇、摄像头、传感器、音箱、扫地机、热水器、户外地面；另有 `garden` 庭院铺装等示例插件在 `custom/plugins/`），自定插件放 `custom/plugins/` 即插即用、可覆盖内置。**门窗也支持多造型**：门有单开门/双开门（卷帘门 `door_rolling` 在 custom），窗有推拉窗/对开窗（固定窗 `window_fixed` 在 custom），右侧面板一键切换，3D 动画与 2D 平面符号同步（门窗平面符号与设备简笔图都由插件 `plan2d()` 自绘，编辑器只留通用兜底；门窗传洞口在屏幕上的宽度 `L = w × ppm`，设备传 `ppm` 按「米 × ppm」自算尺寸）；样式按钮的图标同样由插件自带 SVG，引擎里没有任何造型/图标硬编码。**写插件见 [插件开发](#插件开发) → [PLUGIN-DEV.md](PLUGIN-DEV.md)**
+- 🔌 **连接面板**：填 HA 地址 + 长期访问令牌，保存到 `data/config.json`，重启自动恢复
+- 🧩 **演示模式**：未配置 HA 时自动模拟实体，完整体验全流程
+
+## 插件开发
+
+设备造型、门窗动画、地面背景**全部是插件** —— 想加自己的，从这里开始：
+
+| 你想做什么 | 看哪一份 |
+|---|---|
+| **写一个新插件**：注册项全表、`ctx` 能力、设备/门窗/背景三类模板、调试与常见坑 | **[PLUGIN-DEV.md](PLUGIN-DEV.md)** — 插件开发手册（按「目录与加载 → 通用 ctx → `device` / `opening` / `background` → 复制即用模板」编排，1000+ 行） |
+| 搭插件骨架：`plugin.json` 怎么写、模型放哪、加载顺序与覆盖规则 | [assets/plugins/README.md](assets/plugins/README.md) — 插件目录规范 |
+| 只想换造型 / 改参数，不写逻辑 | 见 [自定义资产（custom/ 目录）](#自定义资产custom-目录)：双目录合并与覆盖规则 |
+
+最短路径（以「加一个自己的灯造型」为例，详见 [PLUGIN-DEV.md 2.6 最小示例](PLUGIN-DEV.md)）：
+
+1. 把 `assets/plugins/light/` 整个复制到 `custom/plugins/my_light/`，改 `plugin.json` 里的 `id` / `name`
+2. 改 `plugin.js` 的 `styles` 与 `model3d(ctx)`（照手册里的最小示例填，`ctx` 已给好 `box/cyl/sphere/lambert` 等原语）；同一造型的差异项（左右开、内外开…）用 `styles[].options` 声明，插件里读 `ctx.options`，见 [PLUGIN-DEV 2.2.1](PLUGIN-DEV.md#221-样式参数-stylesoptions)
+3. 重启 `node server/index.js` → 编辑器「设备」面板的灯造型里出现新样式，选中即生效；想加 2D 平面符号再写 `plan2d(c, p)`
+
+调试：控制台 `PluginEngine.defs` 可看已注册插件及其字段；插件异常只 warn 不中断渲染（引擎对 `model3d` / `plan2d` / `stateText` 都包了 try/catch）。
+
+## 架构
+
+```
+浏览器 ──WebSocket直连──> Home Assistant (:8123/api/websocket)   实时状态 + 控制
+   │
+   └──HTTP──> 本服务 (Node, 零npm依赖)                            静态页面 + 配置/项目存储 + REST兜底
+                 ├─ /data      config.json · project.json · refimg.*（2D 参考底图）
+                 └─ /app/assets 内置家具模型与插件（镜像内，只读）
+```
+
+内存占用约 **50-60MB**（docker-compose 限制 128m）。
+
+## Docker 部署
+
+```bash
+docker compose up -d --build
+# 或
+docker run -d --name ha-3d-home --restart unless-stopped \
+  -p 8099:8099 \
+  -v "$PWD/data:/data" -v "$PWD/custom:/custom" \
+  ha-3d-home:latest
+```
+
+镜像说明（生产模式）：
+
+- **镜像即内置资产**：`assets/`（模型 + 插件）直接打进镜像，不挂载、不解压，升级镜像 = 升级内置资产
+- **用户数据全在挂载卷**，升级/重建镜像都不丢：
+  - `/data`（容器路径）— 连接配置 + 户型项目 + 贴图（首启缺 `config.json` / `project.json` 时写入默认值，已有则不动）
+  - `/custom`（宿主机 `custom/`）— 用户自定义模型与插件，镜像只建目录、永不写入
+- **日志**：`NODE_ENV=production` 下默认静默（服务端 + 前端调试日志全关）；排查时 `-e HA3D_LOG=1`
+- 首次安装的示例户型与连接配置来自 `deploy/seed/data/`（构建时打进镜像，容器首启缺文件才写入）
+
+打开 `http://主机IP:8099` → 右上角「连接」→ 填入 HA 地址（如 `http://192.168.31.16:8123`）和
+长期访问令牌（HA 用户头像 → 安全 → 长期访问令牌）→ 保存并连接。
+
+> ⚠️ 令牌会下发到浏览器用于直连 HA WebSocket，请仅在可信内网使用。
+
+## 自定义资产（custom/ 目录）
+
+内置资产在 `assets/`（直接打进镜像），**用户自定义放 `custom/`，结构与 assets 完全相同**，服务端自动合并，**同名/同 id 时自定义覆盖内置**：
+
+```
+custom/
+├─ models/        自定义家具模型 *.glb（与内置同 id 同名 → 直接替换该家具模型）
+├─ plugins/       自定义插件 <目录>/plugin.json + plugin.js（同插件 id → 覆盖内置插件）
+└─ catalog.json   （可选）自定义家具清单，条目覆盖内置同名 id
+```
+
+- 本地开发：直接在项目根 `custom/` 下放文件，重启 `node server/index.js` 生效
+- Docker：`-v "$PWD/custom:/custom"` 单独挂载（compose 已配好），升级/重建镜像不丢失
+- 覆盖示例：想换内置的「双人床」模型，只需把新 glb 命名为与内置相同 id 放进 `custom/models/`，清单和代码都不用动
+- 自己写插件：目录结构 → [assets/plugins/README.md](assets/plugins/README.md)；写代码 → [PLUGIN-DEV.md](PLUGIN-DEV.md)（速览见 [插件开发](#插件开发)）
+
+## 安装插件（zip）
+
+插件包结构（**无顶层目录**，和 studio 导出的压缩包一致）：
+
+```
+plugin.json    清单：id / name / version / kind…（id 决定安装目录名）
+plugin.js      注册代码（PluginEngine.register）
+models/*.glb   可选，插件自带模型
+```
+
+两种安装方式，落到同一个位置 `custom/plugins/<id>/`，**同 id 已存在则整体覆盖升级**（先写临时目录再原子替换，失败自动回滚旧版本）：
+
+1. **编辑器右上角「导入插件」**：把 zip 拖进弹窗（或点选文件）→ 自动上传 → 成功后页面自动刷新，插件立即可用
+2. **远程安装（studio 一键发布）**：`POST /api/plugins/install?id=<id>&version=<v>`
+   - 头 `X-Install-Key`：先在 HA 3D Home 里配安装密钥（见下），studio 设置里填同一个
+   - 头 `Content-Type: application/zip`，body 就是 zip 字节
+   - 返回 200 `{ ok, id, version, upgraded, files }`；密钥错 401、包不合法 400
+
+安装密钥配置（二选一，环境变量优先）：
+
+- 「连接与服务」弹窗里的**安装密钥**输入框（存 `data/install-key.json`，接口 `/api/install/config`）
+- 环境变量 `HA3D_INSTALL_KEY`（容器部署推荐，页面会显示为不可修改）
+
+> 未配置密钥时远程安装一律 401，编辑器里的「导入插件」不受影响。
+
+## 本地开发（无需 Docker）
+
+```bash
+node server/index.js   # 零依赖，无需 npm install；端口默认 8077（PORT=xxxx 可改）
+# 打开 http://localhost:8077
+```
+
+## 目录
+
+```
+server/            后端（零 npm 依赖，只用 Node 内置模块）
+  index.js         入口：启动 + 路由表 + HA REST 兜底代理
+  core.js          目录常量 / 日志 / data 持久化（连接配置、安装密钥、户型项目）
+  assets.js        HTTP 工具、静态托管与缓存、家具目录合并、2D 参考底图
+  plugins.js       插件清单扫描 + zip 安装（自带最小 zip 解析）
+public/            前端（编辑器 / 3D / HA 客户端，交互逻辑全在前端）
+  index.html       编辑器（2D 户型 + 3D 预览 + 面板）
+  display.html     大屏展示页（只读 + 场景执行 + 快捷设备）
+  js/ha.js         HA WebSocket 直连客户端 + 演示模式
+  js/editor.js     2D 户型编辑器
+  js/view3d.js     Three.js 3D 视图（frame(opts) 取景由调用端自控）
+  js/catalog.js    固定类型枚举 + assets 目录动态加载（家具形态）+ 插件造型聚合
+  js/plugins.js    有状态插件引擎（门窗/设备 GLB + 状态动画 + 背景插件生命周期）
+  js/app.js        总控 / 面板 / HUD
+  js/display.js    大屏页面逻辑（场景回执 / 取景记忆 / 楼层记忆）
+data/              运行时配置与项目（勿删）
+assets/            内置目录数据 + 家具模型 + 设备/背景插件（见 assets/README.md）
+custom/            用户自定义模型与插件（结构同 assets，同名/同 id 覆盖内置）
+PLUGIN-DEV.md      插件开发手册（通用 ctx 函数表 + 设备/门窗/背景三类参数与示例）
+```
+
+> 📘 上表里的 `PLUGIN-DEV.md` 是插件开发手册 —— 直接打开：[PLUGIN-DEV.md](PLUGIN-DEV.md)；配套的目录规范：[assets/plugins/README.md](assets/plugins/README.md)。
+
+## 脚本工具（scripts/）
+
+全部零依赖，无需 npm install：
+
+| 脚本 | 作用 | 用法 |
+|---|---|---|
+| `fix-glb-materials.py` | 检查并修复 GLB 材质问题（见下） | `npm run fix:glb` |
+| `pack-image.sh` | 离线打包镜像：构建 → 导出单个 tar（不依赖镜像仓库），见下方说明 | `npm run pack:image:amd64` |
+
+### pack-image.sh 离线打包（无镜像仓库）
+
+给没有 registry 的环境用：构建完直接 `docker save` 成一个 tar，拷到目标机 `docker load` 即可。
+
+```bash
+npm run pack:image            # 按本机架构打包
+npm run pack:image:amd64      # 给 x86_64 服务器/NAS（飞牛、群晖等）
+npm run pack:image:arm64      # 给 ARM 设备
+```
+
+产物为 `dist/ha-3d-home-<version>-<arch>.tar`（约 130-160MB）。**跨架构必须显式指定平台**——Apple Silicon 上直接 build 出的是 arm64 镜像，拿到 x86 机器上会 `exec format error`。目标机导入后，把根目录 `docker-compose.yml` 复制一份并删掉 `build: .` 一行（保留 `image: ha-3d-home:latest`），再 `docker compose up -d`。
+
+### fix-glb-materials.py 材质检查与修复
+
+从网上下载的模型放进 3D 场景发黑时跑一遍即可根治（修改的是模型文件本身，运行时不再兜底处理）。**无参数运行 = 默认扫描项目 `assets/` + `custom/`**（递归收集所有 `.glb`，覆盖家具模型和插件里的模型），先逐项报告问题再批量原地修复，原文件备份到 `backups/<相对路径>`（同名覆盖）：
+
+```bash
+npm run fix:glb            # 扫描 assets/ + custom/，检查并批量修复
+npm run fix:glb:check      # 只检查不修改
+python3 scripts/fix-glb-materials.py model.glb         # 修指定文件（可传多个文件/目录）
+python3 scripts/fix-glb-materials.py ~/Downloads --out ./fixed   # 修复版另存（保留目录结构）
+```
+
+判定规则（参数在合适范围内不调整，可重复运行不会二次修改）：
+
+- 无贴图材质最亮通道 `< 0.25` → sRGB 颜色被当线性存了，gamma 提亮（`≤ 0.05` 视为有意的纯黑，不动）
+- `metallic > 0.05` → 压到 0（无环境贴图的场景里金属度必然发黑；与贴图相乘，有贴图同样有效）
+- `roughness < 0.7` → 抬到 0.7（柔化高光）
+- 移除 `KHR_materials_specular` 等压暗扩展
+
+已有贴图的材质不动颜色（贴图本身就是对的）；修完刷新页面即可看效果。
+
+### 模型哪里找
+
+推荐 [poly.pizza](https://poly.pizza/)——免费低多边形模型库（Quaternius、Kenney 等作者），按分类/关键词搜索，直接下载 GLB 放进 `custom/models/` 即用。下载的模型若在场景里发黑，跑一次 `npm run fix:glb` 修复材质即可。
+
+## 快捷键
+
+`V` 选择 · `H` 平移 · `W` 墙体 · `D` 门 · `N` 窗 · `F` 家具 · `E` 设备 · `B` 贴图 · `G` 背景 · `Del` 删除 · `Esc` 取消 · 空格+拖拽 平移 · 滚轮 缩放

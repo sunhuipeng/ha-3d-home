@@ -1,0 +1,8 @@
+{
+  "id": "cover",
+  "name": "窗帘",
+  "version": "1.0.10",
+  "kind": "device",
+  "type": "cover",
+  "description": "轨道窗帘，随实体状态开合（open=拉开收拢 / closed=闭合遮光），带缓动动画"
+}

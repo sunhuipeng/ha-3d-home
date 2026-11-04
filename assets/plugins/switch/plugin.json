@@ -1,0 +1,8 @@
+{
+  "id": "switch",
+  "name": "开关/插座",
+  "version": "1.0.10",
+  "kind": "device",
+  "type": "switch",
+  "description": "墙壁开关（翘板随 on/off 翻转）与智能插座（通电指示灯）"
+}
