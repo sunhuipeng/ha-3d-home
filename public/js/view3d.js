@@ -10,7 +10,7 @@ const View3D = {
   renderer: null, scene: null, camera: null, controls: null,
   root: null,              // 当前楼层根节点
   wrap: null,
-  deviceMeshes: [],        // 可点击设备 mesh
+  pickGroups: [],          // 可点击模型根 Group（设备 + 门/窗；拾取时递归 raycast，命中后沿父链回溯）
   labels: [],              // {el, d}：el = 标签 DOM，d = 设备数据
   labelsVisible: true,     // 标签显示开关（编辑页顶栏可切换）
   currentFloorIdx: 0,
@@ -140,7 +140,7 @@ const View3D = {
     this.clearAnchorFx();
     if (window.PluginEngine) PluginEngine.reset();   // 注销上一轮插件实例
     if (this.root) { this.scene.remove(this.root); this.disposeGroup(this.root); }
-    this.deviceMeshes = [];
+    this.pickGroups = [];
     this.clearLabels();
     this.root = new THREE.Group();
 
@@ -158,10 +158,10 @@ const View3D = {
     (fl.doors || []).forEach((d) => this.assignOpening(d, 'door', fl, wallOpenings));
     const wallExts = this.computeWallExt(fl.walls);
     fl.walls.forEach((w, i) => this.buildWall(w, wallOpenings[i], wallExts.get(w)));
-    // 门窗造型/开合动画全部由 door / window 插件负责；无插件时由引擎放薄板占位
+    // 门/窗 = type:'door'/'window' 的贴墙设备，与设备走同一条建造路径（模型/热区/标签/点击全套同构）
     if (window.PluginEngine) {
-      (fl.windows || []).forEach((wd) => PluginEngine.spawnOpening(wd, 'window', this));
-      (fl.doors || []).forEach((d) => PluginEngine.spawnOpening(d, 'door', this));
+      (fl.windows || []).forEach((wd) => this.buildDevice(wd, 'window'));
+      (fl.doors || []).forEach((d) => this.buildDevice(d, 'door'));
     }
     (fl.furniture || []).forEach((f) => this.buildFurniture(f));
     (fl.devices || []).forEach((d) => this.buildDevice(d));
@@ -177,9 +177,11 @@ const View3D = {
     this.center = new THREE.Vector3((minX + maxX) / 2, 1, (minY + maxY) / 2);
     this.controls.target.copy(this.center);
 
-    /* 全屋包围盒 + 安全边界的地基：背景插件按它决定在哪里画（与当前楼层无关，
-     * 否则切楼层时地面/道具会随楼层尺寸跳变）。hash 用于「尺寸没变就不重放」。 */
-    this.house = this.computeHouse(project);
+    /* 当前楼层的房屋包围盒 + 安全边界的地基：背景插件按它决定在哪里画。
+     * 按层取（楼层间户型尺寸可能不一样，背景构图跟着当前层走）；
+     * hash 只含包围盒 —— 切到尺寸不同的楼层 / 拖墙改尺寸都会重放背景，
+     * 尺寸相同的楼层间切换不重放（构图完全一样，省一次重绘）。 */
+    this.house = this.computeHouse(project, this.currentFloorIdx);
     if (this.house.hash !== this._houseHash) {
       this._houseHash = this.house.hash;
       // 尺寸变化（拖墙/加层/删层）才重放背景；高频改设备坐标不会触发重建。
@@ -203,13 +205,20 @@ const View3D = {
     this.refresh();
   },
 
-  /* 全屋包围盒: 所有楼层墙体的并集（没有墙时给一个 8×8 的兜底范围） */
-  computeHouse(project) {
+  /* 房屋包围盒（背景插件构图的地基）。默认按 floorIdx 指定的楼层取（楼层间户型
+   * 尺寸可能不一样，背景构图跟着当前层走）；该层没画墙时回退全屋并集，避免 0×0 构图。
+   * floors = 全项目有墙的楼层数（插件参考信息，与取值范围无关）。 */
+  computeHouse(project, floorIdx) {
+    const all = ((project && project.floors) || []);
+    let src = all;
+    if (typeof floorIdx === 'number' && all[floorIdx] && ((all[floorIdx].walls) || []).length) {
+      src = [all[floorIdx]];
+    }
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, floors = 0;
-    ((project && project.floors) || []).forEach((fl) => {
+    all.forEach((fl) => { if (((fl && fl.walls) || []).length) floors++; });
+    src.forEach((fl) => {
       const ws = (fl && fl.walls) || [];
       if (!ws.length) return;
-      floors++;
       ws.forEach((w) => {
         minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2);
         minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2);
@@ -223,13 +232,13 @@ const View3D = {
       cx: r2((minX + maxX) / 2), cy: r2((minY + maxY) / 2),
       floors,
     };
-    h.hash = [h.minX, h.maxX, h.minY, h.maxY, h.floors].join('|');
+    h.hash = [h.minX, h.maxX, h.minY, h.maxY].join('|');
     return h;
   },
 
-  /* 当前全屋包围盒（背景插件经 ctx.house 拿到；未构建时按当前项目现算） */
+  /* 当前楼层的房屋包围盒（背景插件经 ctx.house 拿到；未构建时按当前项目现算） */
   houseBounds() {
-    if (!this.house && this.project) this.house = this.computeHouse(this.project);
+    if (!this.house && this.project) this.house = this.computeHouse(this.project, this.currentFloorIdx);
     return this.house || null;
   },
 
@@ -406,10 +415,15 @@ const View3D = {
       if (s1 - s0 < 0.05) continue;
       addSeg(cur, s0, 0, this.wallH);
       if (op.kind === 'door') {
-        addSeg(s0, s1, DOOR_H, this.wallH);           // 门楣
+        addSeg(s0, s1, DOOR_H, this.wallH);           // 门楣（门恒落地，洞高不随 z 变）
       } else {
-        addSeg(s0, s1, 0, WIN_SILL);                  // 窗台
-        addSeg(s0, s1, WIN_TOP, this.wallH);          // 窗楣
+        /* 窗洞随实例的离地高度（obj.z）整体上移：模型自带 0.9m 窗台，z 是整体抬升，
+         * 所以洞口下沿 = 0.9 + z、上沿 = 2.1 + z（钳到墙高，抬太高时不画负高度段） */
+        const wz = (op.o && op.o.z) || 0;
+        const sill = Math.min(this.wallH, WIN_SILL + wz);
+        const top = Math.min(this.wallH, WIN_TOP + wz);
+        addSeg(s0, s1, 0, sill);                      // 窗台
+        addSeg(s0, s1, top, this.wallH);              // 窗楣
       }
       cur = s1;
     }
@@ -436,7 +450,7 @@ const View3D = {
     });
   },
 
-  /* 门窗不再有本文件内的绘制实现：build() 直接调 PluginEngine.spawnOpening()，
+  /* 门/窗不再有本文件内的绘制实现：rebuild() 把它们当 type:'door'/'window' 的设备走 buildDevice()，
    * 造型、GLB、开合动画、无插件时的占位全部在插件引擎侧（见 plugins.js） */
 
   buildFurniture(f) {
@@ -489,32 +503,45 @@ const View3D = {
     return mesh;
   },
 
-  /* 设备锚点离地高度（d.z 优先，否则取插件造型声明的 z，缺省 1.2m） */
+  /* 锚点离地高度（统一）:
+   *   d.z 优先（面板「离地高度」实例值）
+   *   门/窗（贴墙类型）→ 插件 def.z 声明（door/window 都声明 z:0 贴地），未声明回退 0
+   *   设备 → 目录造型 z（deviceDefaultZ），缺省 1.2m */
   devY(d, type) {
-    return d.z != null ? d.z : deviceDefaultZ(d, type);
+    if (d.z != null) return d.z;
+    if (type === 'door' || type === 'window') {
+      const def = (window.PluginEngine && PluginEngine.defFor) ? PluginEngine.defFor(type, d.style) : null;
+      return def && def.z != null ? def.z : 0;
+    }
+    return deviceDefaultZ(d, type);
   },
 
-  /* 设备造型完全由插件负责：插件缺失 / 自定义 GLB 失败时的通用占位也在引擎里（plugins.js）。
-   * 本函数只做与造型无关的事：通用变换（比例/旋转/离地高度）与拾取热区。 */
-  buildDevice(d) {
-    const type = devTypeOf(d);
+  /* 模型建造（设备与门/窗统一）: 插件造型完全由插件负责，本函数只做与造型无关的事:
+   * 通用变换（锚点/比例/水平旋转）与拾取热区。type 缺省取 d.type（门/窗由调用方显式传入）。
+   * 锚点高度规则见 devY；rot 全链统一存「度」（含门/窗，编辑器沿墙吸附时已转度）。 */
+  buildDevice(d, type) {
+    type = type || devTypeOf(d);
     const grp = new THREE.Group();
     const body = new THREE.Group();   // 造型节点（比例/水平旋转作用于此，不影响热区）
     grp.add(body);
 
     if (window.PluginEngine) PluginEngine.spawnDevice(d, type, this, body);
 
-    // 通用变换: 离地高度 / 整体比例(%) / 水平旋转(度)
+    // 通用变换: 离地高度 / 整体比例(%) / 水平旋转（全链统一 °，与 2D/面板同一单位）
     body.scale.setScalar((d.pct || 100) / 100);
     body.rotation.y = -((d.rot || 0) * Math.PI) / 180;
 
     grp.position.set(d.x, this.devY(d, type), d.y);
     grp.userData.device = d;
-    // 热区跟随锚点
+    grp.userData.devType = type;
+    // 锚点热球: 保底热区（模型很小 / 插件缺失时也有得点）。
+    // 完整模型拾取在 pick() —— 对整个设备组递归 raycast，点灯罩/灯杆/门板同样能开关
+    // 球心高度按插件 def.hitY 声明（窗 1.4 / 门 1.1，设备 0 = 锚点处）
     const hit = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 6), new THREE.MeshBasicMaterial({ visible: false }));
+    hit.position.y = (window.PluginEngine && PluginEngine.hitY) ? PluginEngine.hitY(type, d.style) : 0;
     hit.userData.deviceRef = grp;
     grp.add(hit);
-    this.deviceMeshes.push(hit);
+    this.pickGroups.push(grp);
     this.root.add(grp);
   },
 
@@ -537,23 +564,29 @@ const View3D = {
     if (!this.root) return;
     const fl = project.floors[this.currentFloorIdx];
     if (!fl) return;
-    (fl.devices || []).forEach((d) => {
+    /* 设备与门/窗同一套标签管线：type 就是插件 type（HA 域或 door/window），
+     * 判定/文案/点击全走同一套插件契约 */
+    const addLabel = (d, type) => {
+      /* 标签显隐由插件注册时的 labels 参数决定（设备缺省开、门/窗缺省关，插件可显式开启） */
+      if (window.PluginEngine && !PluginEngine.wantsLabel(type, d.style)) return;
       const el = document.createElement('div');
       el.className = 'dev3d-label';
-      const type = devTypeOf(d);
-      // 可点击控制: 由插件 click 规格（或内置默认）决定，设备可在属性面板勾选/取消
-      if (this.clickSpecOf(d)) el.classList.add('clickable');
+      // 可点击控制: 由插件 click 规格（或内置默认）决定，实例可在属性面板勾选/取消
+      if (this.clickSpecOf(d, type)) el.classList.add('clickable');
       el.innerHTML = '<span class="ln"></span><br><span class="lv"></span>';
-      el.addEventListener('click', () => this.toggleDevice(d));
+      el.addEventListener('click', () => this.toggleDevice(d, type));
       wrap.appendChild(el);
-      const spec = (window.PluginEngine && PluginEngine.clickSpec) ? PluginEngine.clickSpec(type, d.style) : null;
       this.labels.push({
-        el, d, type, spec,
+        el, d, type,
+        wall: type === 'door' || type === 'window',
         ln: el.querySelector('.ln'),
         lv: el.querySelector('.lv'),
         off: window.PluginEngine ? PluginEngine.labelOffset(type, d.style) : 0.3,
       });
-    });
+    };
+    (fl.devices || []).forEach((d) => addLabel(d, devTypeOf(d)));
+    (fl.doors || []).forEach((o) => addLabel(o, 'door'));
+    (fl.windows || []).forEach((o) => addLabel(o, 'window'));
     this._labelWait = performance.now();   // 本轮标签等待 HA 的起点（超 3s 降级显示，见 updateLabels）
     this.updateLabels();
   },
@@ -572,17 +605,22 @@ const View3D = {
     const v = this._labelV || (this._labelV = new THREE.Vector3());   // 每帧复用，避免逐标签 new
     this.labels.forEach((L) => {
       const { el, d } = L;
-      /* 标签锚点 = 设备锚点上方。抬升量：实例覆盖（属性面板「标签高度」）> 造型声明的
-       * labelOffset > 缺省 0.3m；实例值每帧现读，改参数不用重建 3D */
+      /* 标签锚点: 设备 = 锚点上方；门/窗 = 贴墙模型中部（插件 def.labelBaseY 声明，
+       * door 1.05 / window 1.45；未声明回退 devY）。抬升量：实例覆盖（属性面板「标签高度」）
+       * > 造型声明的 labelOffset > 插件 def.labelOffset > 引擎缺省 0.3；实例值每帧现读 */
       const off = d.labelOffset != null ? d.labelOffset : L.off;
-      v.set(d.x, this.devY(d, L.type) + off, d.y).project(this.camera);
+      const base = (window.PluginEngine && PluginEngine.labelBaseY)
+        ? PluginEngine.labelBaseY(L.type, d.style) : null;
+      const anchorY = base != null ? base : this.devY(d, L.type);
+      v.set(d.x, anchorY + off, d.y).project(this.camera);
       if (v.z > 1) { el.style.display = 'none'; return; }
       el.style.display = '';
       el.style.left = ((v.x + 1) / 2 * w) + 'px';
       el.style.top = ((-v.y + 1) / 2 * h) + 'px';
       const st = HA.getState(d.entityId);
-      /* 有状态才用 HA 的 friendly_name；拿不到时不拿实体 id 尾段当名字（降级路径也不闪现内部 id） */
-      L.ln.textContent = st ? HA.friendly(d.entityId) : (d.name || '');
+      /* 有状态才用 HA 的 friendly_name；拿不到时门/窗显示类型名，设备不闪现内部 id */
+      L.ln.textContent = st ? HA.friendly(d.entityId)
+        : (d.name || (L.wall ? (L.type === 'door' ? '门' : '窗') : ''));
       const lv = L.lv;
       if (!st) { lv.textContent = '无数据'; el.classList.remove('on'); return; }
       const unit = st.attributes ? st.attributes.unit_of_measurement || '' : '';
@@ -593,10 +631,12 @@ const View3D = {
       if (pluginTxt) {
         lv.textContent = pluginTxt;
       } else {
-        lv.textContent = (st.state === 'on' ? '已开启' : st.state === 'off' ? '已关闭' : st.state + (unit ? ' ' + unit : ''));
+        /* on/off 之外认得 open/closed（门/窗磁贴的常用值），其余原样 + 单位 */
+        const base = { on: '已开启', open: '已打开', off: '已关闭', closed: '已关闭' }[st.state];
+        lv.textContent = base || (st.state + (unit ? ' ' + unit : ''));
       }
-      /* 高亮判定跟随插件的 isOn（窗帘 open / 清扫中 / 播放中等），无声明时回退 HA.isOn */
-      el.classList.toggle('on', HA.isOnOf(d.entityId, L.spec));
+      /* 高亮判定走统一入口（插件顶层 isOn → 默认规则），与 2D / 统计同口径 */
+      el.classList.toggle('on', HA.deviceIsOn({ entityId: d.entityId, type: L.type, style: d.style }));
     });
   },
 
@@ -605,47 +645,108 @@ const View3D = {
     this.labels = [];
   },
 
-  /* ---------------- 交互 ---------------- */
+  /* ---------------- 交互 ----------------
+   * 拾取 = 对所有可点击模型根 Group（设备 + 门/窗）递归 raycast（点模型任意部位都算：
+   * 灯罩/灯杆/底盘/门板…），命中 mesh 沿父链回溯找带 userData.device 的设备组；
+   * 类型在 userData.devType（门/窗实例数据没有 type 字段，建造时写入）。
+   * 不再只依赖锚点热球 —— 球只有 0.32m 半径，高设备（落地灯灯罩 1.5m+）点上去毫无反应 */
   pick(e) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hits = this.raycaster.intersectObjects(this.deviceMeshes, false);
-    return hits.length ? hits[0].object : null;
+    const hits = this.raycaster.intersectObjects(this.pickGroups, true);
+    for (let i = 0; i < hits.length; i++) {
+      let o = hits[i].object;
+      while (o) {
+        if (o.userData && o.userData.device) return o;
+        o = o.parent;
+      }
+    }
+    return null;
   },
 
   onClick(e) {
-    if (this._anchorPicked) { this._anchorPicked = false; return; }   // 长按设锚点后的松手不算点击，避免误触设备开关
-    const hit = this.pick(e);
-    if (!hit || !hit.userData.deviceRef) return;
-    const grp = hit.userData.deviceRef;
-    this.toggleDevice(grp.userData.device);
+    if (this._anchorPicked) { this._anchorPicked = false; return; }   // 长按设锚点后的松手不算点击，避免误触开关
+    const grp = this.pick(e);
+    if (!grp) return;
+    this.toggleDevice(grp.userData.device, grp.userData.devType);
   },
 
-  /* 点击控制规格: 插件注册的 click 优先，其次内置默认；设备 d.click 可强制开关
-   *   d.click === true  → 即使插件默认不可点也可点
+  /* 点击控制规格（门禁）: 插件注册的 click 优先，其次内置默认；实例 d.click 可强制开关。
+   * 门/窗已并入设备（kind:'device'），这里不再按类型分支，设备与门窗同一套规则:
    *   d.click === false → 强制不可点
-   *   未设置 → 跟随插件 defaultOn（缺省 true）
+   *   d.click === true  → 即使插件 defaultOn=false 也可点
+   *   未设置 → 跟随插件 defaultOn（缺省 true；插件没声明 click 就没有 spec，不可点）
+   * 实例 d.clickSvc（属性面板「点击动作」下拉）→ 勾选状态下视为明确要可点，
+   * 插件没声明 click / 内置没默认也不再拦（发什么服务由 toggleDevice 按全局动作表解析）。
+   * 「发不发服务」与「能不能点」分离：没绑实体的实例也可能可点，toggleDevice 末尾统一拦截。
+   * typeOrKind: HA 实体类型或贴墙类型 door/window（门/窗实例数据里没有 type 字段，由调用方传入）
    */
-  clickSpecOf(d) {
-    const type = devTypeOf(d);
-    const spec = (window.PluginEngine && PluginEngine.clickSpec) ? PluginEngine.clickSpec(type, d.style) : null;
-    if (!spec) return null;
+  clickSpecOf(d, typeOrKind) {
+    const type = typeOrKind || devTypeOf(d);
     if (d.click === false) return null;
-    if (d.click !== true && spec.defaultOn === false) return null;
-    return spec;
+    const spec = (window.PluginEngine && PluginEngine.clickSpec) ? PluginEngine.clickSpec(type, d.style) : null;
+    if (d.clickSvc) return d.click === true ? (spec || {}) : null;
+    if (!spec) return null;
+    if (d.click === true) return spec;
+    return spec.defaultOn === false ? null : spec;
   },
 
-  toggleDevice(d) {
-    const spec = this.clickSpecOf(d);
+  /* 点击发服务的域: 绑定实体前缀（cover.garage → cover）。门/窗与设备同样是实体绑定，
+   * 无需按类型分支；没绑实体返回 null，toggleDevice 末尾统一拦截不发 */
+  clickDomainOf(d) {
+    const ent = String(d.entityId || '');
+    return ent.includes('.') ? ent.split('.')[0] : null;
+  },
+
+  /* 点击 → 发服务（设备与门/窗统一入口，type = HA 域或贴墙类型 door/window）。
+   * 当前是否开着决定发 on 还是 off：直接用 HA.deviceIsOn（= 插件顶层 isOn → HA.isOn 默认规则），
+   * 和 2D 底色 / 3D 高亮 / 统计完全同一个结论，不会再出现「界面显示关着、点击却发关闭」的错向。
+   * 发什么服务: 实例 d.clickSvc（属性面板下拉）优先级最高，整体替换插件 click / 内置默认；
+   * 未选择时用插件 click / 内置默认，域按 spec.domain（贴墙类型引擎不回退域）否则实体前缀。
+   * on/off 也可以是插件声明的自定义函数（fn(d, api)），此时跳过域/实体校验，由函数自由执行。 */
+  toggleDevice(d, typeOrKind) {
+    const type = typeOrKind || devTypeOf(d);
+    const spec = this.clickSpecOf(d, type);
     if (!spec) return;
-    const st = HA.getState(d.entityId);
-    const onNow = spec.isOn
-      ? !!spec.isOn(st)
-      : !!(st && st.state && st.state !== 'off' && st.state !== 'unavailable');
-    const svc = onNow ? spec.off : spec.on;
-    HA.callService(spec.domain, svc, { entity_id: d.entityId })
-      .then(() => { if (spec.feedback && window.App) App.toast((d.name || HA.friendly(d.entityId) || '设备') + ' · ' + spec.label); })
+    const domain0 = spec.domain || this.clickDomainOf(d);
+    let on = spec.on || 'toggle';
+    let off = spec.off || 'toggle';
+    let label = spec.label;
+    let feedback = spec.feedback === true;
+    let domain = domain0;
+    if (d.clickSvc) {   // 实例级覆盖（优先级最高，全局拉平表按 on 服务名解析）
+      const pair = (window.PluginEngine && PluginEngine.clickSvcPair)
+        ? PluginEngine.clickSvcPair(d.clickSvc) : null;
+      if (pair) {
+        on = pair.on; off = pair.off; label = pair.label; feedback = pair.feedback === true;
+        domain = this.clickDomainOf(d) || domain0;
+      }
+    }
+    const onNow = HA.deviceIsOn({ entityId: d.entityId, type, style: d.style });
+    const svc = onNow ? off : on;
+    /* 自定义函数形态（插件高级用法）: 方向仍由 isOn 驱动，函数自己决定发什么。
+     * api 给插件安全的执行环境（call/get/toast + 原始实例）；无实体也可执行（函数可自由操作）。
+     * 同步抛错与 Promise 拒绝都拦住，避免插件 bug 波及主流程 */
+    if (typeof svc === 'function') {
+      const api = {
+        obj: d,
+        call: (dom, service, data) => HA.callService(dom, service, data || {}),
+        get: (eid) => (typeof HA.getState === 'function' ? HA.getState(eid) : null),
+        toast: (msg) => { if (window.App) App.toast(String(msg)); },
+      };
+      try {
+        Promise.resolve(svc.call(null, d, api)).catch((err) => {
+          if (window.App) App.toast('控制失败: ' + (err && err.message ? err.message : err));
+        });
+      } catch (err) {
+        if (window.App) App.toast('控制失败: ' + (err && err.message ? err.message : err));
+      }
+      return;
+    }
+    if (!domain || !d.entityId) return;   // 没绑实体 / 推不出域就没法发服务
+    HA.callService(domain, svc, { entity_id: d.entityId })
+      .then(() => { if (feedback && window.App) App.toast((d.name || HA.friendly(d.entityId) || '设备') + ' · ' + (label || svc)); })
       .catch((err) => {
         if (window.App) App.toast('控制失败: ' + err.message);
       });

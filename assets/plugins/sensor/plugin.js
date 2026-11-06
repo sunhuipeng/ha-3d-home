@@ -9,8 +9,8 @@
  *              面板/数据里的造型 id 会加 '<插件id>:' 前缀；插件里 ctx.style.id 仍是原始 id
  *       fields 扩展实体 [{ key, label, domains?, placeholder?, tip? }]
  *              绑上后值存 obj[key]，用 ctx.field*(key) 读；未绑定返回 null / ''
- *       click 点击控制 { on, off, isOn(st), label?, defaultOn?, feedback? }
- *              on/off 写服务名或 { domain, service }；isOn(st) 决定「发 on 还是发 off」；
+ *       click 点击控制 { on, off, label?, defaultOn?, feedback? }
+ *              on/off 写服务名或 { domain, service }；「当前算不算开着」由顶层 isOn(obj, get) 判定；
  *              不写 click 时按 type 取内置默认：light/switch/fan/cover = toggle，
  *              water_heater/climate = turn_on + turn_off，其它 type 不可点击；
  *              不写 isOn 时默认「state 既不是 off 也不是 unavailable 就算已开」
@@ -59,10 +59,12 @@ PluginEngine.register({
   click: {
     on: { domain: 'homeassistant', service: 'update_entity' },
     off: { domain: 'homeassistant', service: 'update_entity' },
-    isOn: () => false,          // 永远走 on 分支
     label: '刷新读数',
     feedback: true,             // 刷新无可见状态变化，执行后给个 toast
   },
+
+  /* 开/合判定（引擎唯一入口）: 传感器没有开合概念，恒 false → 点击永远走 on 分支（刷新读数） */
+  isOn() { return false; },
 
   /* 扩展实体（可选）: 电池电量 / 同点湿度。
    * 很多传感器只把温度做成主实体，湿度、电量是独立实体，绑上后一起显示在标签上。 */

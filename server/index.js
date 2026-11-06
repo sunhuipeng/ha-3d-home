@@ -221,11 +221,24 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, core.saveProject(proj));
     }
 
-    /* 户型长宽（背景插件构图参考）：读 project.json 里保存的 houseW/houseD（编辑器保存时现算落盘） */
+    /* 户型长宽（背景插件构图参考）：按各楼层墙体现算「最大的那层」——
+     * 逐维取所有楼层的最大长/宽（保证占位盒能容纳任何一层的户型）。
+     * 现算不出有效值（老数据/无墙）再回退 project.json 里保存的 houseW/houseD。 */
     if (p === '/api/house/size' && req.method === 'GET') {
       const proj = core.loadProject();
-      const w = Number(proj && proj.houseW);
-      const d = Number(proj && proj.houseD);
+      let w = 0, d = 0;
+      ((proj && proj.floors) || []).forEach((fl) => {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        ((fl && fl.walls) || []).forEach((wt) => {
+          if (![wt.x1, wt.x2, wt.y1, wt.y2].every((n) => typeof n === 'number' && isFinite(n))) return;
+          x0 = Math.min(x0, wt.x1, wt.x2); x1 = Math.max(x1, wt.x1, wt.x2);
+          y0 = Math.min(y0, wt.y1, wt.y2); y1 = Math.max(y1, wt.y1, wt.y2);
+        });
+        if (x1 > x0 && y1 > y0) { w = Math.max(w, x1 - x0); d = Math.max(d, y1 - y0); }
+      });
+      w = Math.round(w * 10) / 10;
+      d = Math.round(d * 10) / 10;
+      if (!(w > 0) || !(d > 0)) { w = Number(proj && proj.houseW); d = Number(proj && proj.houseD); }
       const ok = w > 0 && d > 0;
       return sendJSON(res, 200, { ok, houseW: ok ? w : null, houseD: ok ? d : null });
     }

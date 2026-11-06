@@ -20,10 +20,10 @@ assets/
 └─ plugins/                    有状态设备/门窗插件（每个目录一个插件，见 plugins/README.md）
    ├─ door/  window/  light/  switch/  climate/  water_heater/  sensor/  camera/
    ├─ cover/  fan/  speaker/  vacuum/
-   └─ background/               ← 内置背景插件（地面）
+   ├─ background/  garden/      ← 内置背景插件（地面）
 ```
 
-> 另一个背景插件 `garden`（庭院铺装）已挪到 `custom/plugins/garden/`，属于用户自定义资产，随 `custom/` 一起维护。
+> 两个背景插件（`background` 户外地面、`garden` 庭院铺装）都在 `plugins/` 下，同为内置资产，随镜像一起升级；要长期自定义可复制到 `custom/plugins/`。
 
 设备（灯/开关/空调/…）**没有独立的模型目录**：它们的 3D 外观由插件负责，模型放在各插件自己的 `plugins/<id>/models/` 下。
 
@@ -65,7 +65,7 @@ PluginEngine.register({
 
 - 聚合 id = `<插件id>:<造型id>`（`light:pendant`）。多个插件可以有同名造型（各写 `pendant`），
   聚合时按插件前缀区分，不会互相覆盖；设备实例的 `style` 字段存的就是这个完整 id
-- `z`：默认锚点离地高度（米，吸顶灯≈层高、落地灯=0）
+- `z`：默认锚点离地高度（吸顶灯≈层高、落地灯=0）
 - `icon`：可选，SVG 字符串（`ico('<path …/>')` 包裹，不写则显示 ⚙️ 兜底）
 - 同一 `type` 允许多个插件并存（如 `light` 与 `light_strip`），造型各归各的插件渲染
 

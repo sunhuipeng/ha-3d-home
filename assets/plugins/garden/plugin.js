@@ -1,10 +1,11 @@
 /*
- * garden — 庭院铺装背景插件（kind: 'background'，位于 custom/plugins/garden）
+ * garden — 庭院铺装背景插件（kind: 'background'，内置，位于 assets/plugins/garden）
  *
- * 原内置背景插件，已挪到自定义目录：面板里与内置 background 并列分组，
- * 两者同一套契约（PluginEngine.register + apply/update），互不影响。
- * 放在这里即可随便改——升级内置资产（assets/）不会覆盖本文件。
- * 插件 id 仍是 'garden'，所以已有的 style / backgroundOptions（'garden:stream' 等）全部照旧。
+ * 与内置 background 并列分组，同一套契约（PluginEngine.register + apply/update），互不影响。
+ * 注意：本插件随内置资产（assets/）一起升级，改了本文件会被镜像更新覆盖；
+ * 要长期自定义请复制整个目录到 custom/plugins/<新目录>/，并同步改 plugin.json 的 id
+ * 与 register 里的 id/name。插件 id 仍是 'garden'，已有的 style / backgroundOptions
+ * （'garden:stream' 等）全部照旧。
  *
  * apply 统一返回 { group: THREE.Group }（见 background/plugin.js 头部手册）：
  *   ① 扁平背景  → 鹅卵石 / 青砖 / 白砂: K.flat(ctx, 整图) —— 平面网格贴画好的 2048² 整图，
@@ -221,6 +222,7 @@ function gdBuildCourt(ctx) {
 /* ---------------- 注册 ----------------
  * 铺满/扁平组装/面板参数等底座全部来自 PluginEngine.bgKit（见文件顶部说明）。 */
 PluginEngine.register({
+  builtin: true, 
   id: 'garden',
   kind: 'background',
   name: '庭院铺装',

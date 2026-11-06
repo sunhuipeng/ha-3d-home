@@ -18,6 +18,7 @@ const Editor = {
   panning: false,
   drag: null,              // 拖动选中元素 {kind,id,dx,dy}
   onChange: null,
+  onViewChange: null,      // 平移/缩放结束 → App 压一条视图快照（见 recode.js pushView）
   backgroundImage: null,   // 楼层贴图 {img, src, name, x, y, w, opacity, hidden}
 
   GRID: 0.1,
@@ -68,10 +69,43 @@ const Editor = {
     pts.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); });
     const pad = 1.5;
     const w = this.canvas.width / devicePixelRatio, h = this.canvas.height / devicePixelRatio;
-    this.ppm = Math.min(w / (maxX - minX + pad * 2), h / (maxY - minY + pad * 2));
-    this.ox = (w - (minX + maxX) * this.ppm) / 2;
-    this.oy = (h - (minY + maxY) * this.ppm) / 2;
+    const R = this.RULER;           // 刻度尺占据的边缘，适配时让出来
+    const aw = Math.max(40, w - R), ah = Math.max(40, h - R);
+    this.ppm = Math.min(aw / (maxX - minX + pad * 2), ah / (maxY - minY + pad * 2));
+    this.ox = R + (aw - (minX + maxX) * this.ppm) / 2;
+    this.oy = R + (ah - (minY + maxY) * this.ppm) / 2;
     this.render();
+  },
+
+  /* 居中: 保持当前缩放不变，只把户型包围盒平移回画布中心（解决平移后跑偏，一键归位）。
+   * 包围盒取样与 fit() 一致（墙 + 家具 + 设备），只是不重算 ppm */
+  center() {
+    if (!this.floor) return;
+    const pts = [];
+    this.floor.walls.forEach((w) => pts.push([w.x1, w.y1], [w.x2, w.y2]));
+    this.floor.furniture.forEach((f) => pts.push([f.x - 1, f.y - 1], [f.x + 1, f.y + 1]));
+    this.floor.devices.forEach((d) => pts.push([d.x - 1, d.y - 1], [d.x + 1, d.y + 1]));
+    if (!pts.length) { this.ox = this.canvas.width / 2; this.oy = this.canvas.height / 2; this.render(); return; }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    pts.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); });
+    const w = this.canvas.width / devicePixelRatio, h = this.canvas.height / devicePixelRatio;
+    const R = this.RULER;
+    const aw = Math.max(40, w - R), ah = Math.max(40, h - R);
+    this.ox = R + (aw - (minX + maxX) * this.ppm) / 2;
+    this.oy = R + (ah - (minY + maxY) * this.ppm) / 2;
+    this.render();
+  },
+
+  /* 画布视图（平移偏移 + 缩放）：随撤销快照存取，恢复时不再 fit()，
+   * 避免 undo/redo 时整幅画面位置和比例突变 */
+  viewState() { return { ox: this.ox, oy: this.oy, ppm: this.ppm }; },
+  setView(v) {
+    if (!v) { this.fit(); return; }
+    if (Number.isFinite(v.ppm)) this.ppm = Math.max(8, Math.min(400, v.ppm));
+    if (Number.isFinite(v.ox)) this.ox = v.ox;
+    if (Number.isFinite(v.oy)) this.oy = v.oy;
+    this.render();
+    if (window.App && App.updateZoomLabel) App.updateZoomLabel(Math.round(this.ppm / 60 * 100));
   },
 
   setZoom(ppm) {
@@ -81,6 +115,7 @@ const Editor = {
     const [nx, ny] = this.toScreen(wx, wy);
     this.ox += cx - nx; this.oy += cy - ny;
     this.render();
+    this.viewChanged();
   },
 
   /* ------- 吸附 ------- */
@@ -110,21 +145,49 @@ const Editor = {
     this.mouse.down = true;
 
     if (e.button === 1 || this.tool === 'pan' || spaceHeld) {
-      this.panning = true; this.panFrom = [sx, sy]; return;
+      this.panning = true; this.panFrom = [sx, sy]; this.panMoved = false; return;
     }
     if (e.button === 2) return;
+    /* 刻度尺区域不穿透: 避免点到「被尺子盖住、看不见」的元素 */
+    if (sx < this.RULER || sy < this.RULER) return;
 
     switch (this.tool) {
       case 'wall': {
-        const [px, py] = this.snap(wx, wy, null);
+        /* 画墙工具下也保留编辑能力:
+         * ① 点中「已选中墙」的端点圆 → 拖端点（不必先切回选择工具）
+         * ② 点中已有墙体中部（离端点 0.35m 以外）→ 选中该墙并结束连续画墙，
+         *    不会误落一条新墙；端点附近仍按落点处理（方便接墙 / 拐角相连） */
+        const endHit = this.hitWallEnd(sx, sy);
+        if (endHit) {
+          this.dragEnd = { wall: endHit.wall, end: endHit.end, openings: [] };
+          [...this.floor.doors, ...this.floor.windows].forEach((o) => {
+            if (o.wallId !== endHit.wall.id) return;
+            this.dragEnd.openings.push({ o, t: this.projT(endHit.wall, o.x, o.y) });
+          });
+          break;
+        }
+        const onWall = this.floor.walls.find((w) => {
+          const tt = this.projT(w, wx, wy);
+          const cx = w.x1 + (w.x2 - w.x1) * tt, cy = w.y1 + (w.y2 - w.y1) * tt;
+          if (Math.hypot(wx - cx, wy - cy) > w.t / 2 + 0.08) return false;
+          const dEnd = Math.min(Math.hypot(wx - w.x1, wy - w.y1), Math.hypot(wx - w.x2, wy - w.y2));
+          return dEnd > 0.35;
+        });
+        if (onWall) {
+          this.wallStart = null;
+          this.select('wall', onWall.id, 'wall');
+          this.render();
+          break;
+        }
+        const [px, py] = this.wallPoint(wx, wy);
         if (!this.wallStart) { this.wallStart = [px, py]; }
         else {
-          const [qx, qy] = this.snap(wx, wy, null);
+          const [qx, qy] = this.wallPoint(wx, wy);
           if (Math.hypot(qx - this.wallStart[0], qy - this.wallStart[1]) > 0.05) {
             const w = { id: uid(), x1: this.wallStart[0], y1: this.wallStart[1], x2: qx, y2: qy, t: this.WALL_T };
             this.floor.walls.push(w);
             this.wallStart = [qx, qy];
-            this.changed(false, 'wall');
+            this.changed(false, 'wall:' + w.id);
           }
         }
         this.render();
@@ -138,10 +201,16 @@ const Editor = {
         const t = this.projT(w, wx, wy);
         const mx = w.x1 + (w.x2 - w.x1) * t, my = w.y1 + (w.y2 - w.y1) * t;
         const ang = Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
-        const item = { id: uid(), x: Math.round(mx * 100) / 100, y: Math.round(my * 100) / 100, w: this.tool === 'door' ? 0.9 : 1.2, rot: ang, wallId: w.id };
+        /* rot 全链统一存「度」: 沿墙角度 = 墙向角转度（3D/2D/面板按 ° 读写，与设备同一单位）。
+         * 放置缺省宽按插件 def.defaultW 声明取（door 0.9 / window 1.2 由各自插件声明），引擎未就绪时回退 */
+        const engine = (window.PluginEngine && PluginEngine.ready) ? PluginEngine : null;
+        const defW = engine ? engine.defaultW(this.tool) : null;
+        const item = { id: uid(), x: Math.round(mx * 100) / 100, y: Math.round(my * 100) / 100,
+          w: defW || (this.tool === 'door' ? 0.9 : 1.2),
+          rot: Math.round(ang * 180 / Math.PI * 1000) / 1000, wallId: w.id };
         (this.tool === 'door' ? this.floor.doors : this.floor.windows).push(item);
         this.select('door/window', item.id, this.tool === 'door' ? 'door' : 'window');
-        this.changed(false, this.tool);
+        this.changed(false, this.tool + ':' + item.id);
         break;
       }
       case 'furniture': {
@@ -152,7 +221,7 @@ const Editor = {
         const f = { id: uid(), mid: g.id || g.type, x: this.snapG(wx), y: this.snapG(wy), rot: 0 };
         this.floor.furniture.push(f);
         this.select('furniture', f.id);
-        this.changed(false, 'furn');
+        this.changed(false, 'furn:' + f.id);
         break;
       }
       case 'device': {
@@ -163,15 +232,28 @@ const Editor = {
         this.floor.devices.push(d);
         this.select('device', d.id);
         this.ghost = null;
-        this.changed(false, 'dev');
+        this.changed(false, 'dev:' + d.id);
         break;
       }
       case 'select': default: {
+        /* 已选中墙 → 先判两端圆圈: 命中则进入端点拖拽（门窗按比例跟随重投影） */
+        const endHit = this.hitWallEnd(sx, sy);
+        if (endHit) {
+          this.dragEnd = { wall: endHit.wall, end: endHit.end, openings: [] };
+          [...this.floor.doors, ...this.floor.windows].forEach((o) => {
+            if (o.wallId !== endHit.wall.id) return;
+            this.dragEnd.openings.push({ o, t: this.projT(endHit.wall, o.x, o.y) });
+          });
+          break;
+        }
         const hit = this.hitTest(wx, wy);
         if (hit) {
           this.select(hit.kind, hit.item.id, hit.kind);
-          const it = hit.item;
-          this.drag = { kind: hit.kind, item: it, dx: wx - it.x, dy: wy - it.y };
+          /* 墙体只选中、不拖动（防误移动）；其他元素照常拖 */
+          if (hit.kind !== 'wall') {
+            const it = hit.item;
+            this.drag = { kind: hit.kind, item: it, dx: wx - it.x, dy: wy - it.y };
+          }
         } else {
           this.select(null);
         }
@@ -187,17 +269,46 @@ const Editor = {
 
     if (this.panning && this.mouse.down) {
       this.ox += sx - this.panFrom[0]; this.oy += sy - this.panFrom[1];
-      this.panFrom = [sx, sy]; this.render(); return;
+      this.panFrom = [sx, sy]; this.panMoved = true; this.render(); return;
     }
     if (this.drag && this.mouse.down) {
       const it = this.drag.item;
       const nx = Math.round((wx - this.drag.dx) * 100) / 100;
       const ny = Math.round((wy - this.drag.dy) * 100) / 100;
-      if (nx !== it.x || ny !== it.y) { it.x = nx; it.y = ny; this.changed(true); }
+      if (nx !== it.x || ny !== it.y) { it.x = nx; it.y = ny; this.changed(true, 'drag:' + this.drag.kind + ':' + it.id); }
       return;
     }
-    // 悬浮提示
-    if (this.isSelectTool()) {
+    /* 拖墙端点: 吸附(0.1m 网格/其他墙端点) → 更新端点 → 挂墙门窗按比例重投影。
+     * 按住 Shift 时以「另一端」为基准锁正交，拖出严格的水平/垂直墙 */
+    if (this.dragEnd && this.mouse.down) {
+      const w = this.dragEnd.wall;
+      const first = this.dragEnd.end === 1;
+      const bx = first ? w.x2 : w.x1, by = first ? w.y2 : w.y1;   // 基准 = 另一端
+      const L = this.lockAxis(bx, by, wx, wy);
+      let [px, py] = this.snap(L.x, L.y, w.id);
+      if (L.axis === 'h' && Math.abs(py - L.y) > 1e-6) py = L.y;
+      if (L.axis === 'v' && Math.abs(px - L.x) > 1e-6) px = L.x;
+      const k = this.dragEnd.end === 1 ? ['x1', 'y1'] : ['x2', 'y2'];
+      if (px !== w[k[0]] || py !== w[k[1]]) {
+        w[k[0]] = px; w[k[1]] = py;
+        const ang = Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
+        this.dragEnd.openings.forEach(({ o, t }) => {
+          o.x = Math.round((w.x1 + (w.x2 - w.x1) * t) * 100) / 100;
+          o.y = Math.round((w.y1 + (w.y2 - w.y1) * t) * 100) / 100;
+          o.rot = Math.round(ang * 180 / Math.PI * 1000) / 1000;   // 跟墙角度（度，全链统一单位）
+        });
+        this.changed(true, 'dragend:' + w.id);
+      }
+      return;
+    }
+    /* 悬停: 端点圆圈给 grab 光标（拖动中 grabbing），其余走元素提示 */
+    if (this.isSelectTool() && this.hitWallEnd(sx, sy)) {
+      this.canvas.style.cursor = this.mouse.down ? 'grabbing' : 'grab';
+    } else if (this.canvas.style.cursor) {
+      this.canvas.style.cursor = '';
+    }
+    // 悬浮提示（刻度尺区域内不提示：那层上盖着尺子，元素看不见）
+    if (this.isSelectTool() && sx >= this.RULER && sy >= this.RULER) {
       const hit = this.hitTest(wx, wy);
       this.hoverItem = hit;
       const tip = document.getElementById('tooltip');
@@ -220,7 +331,10 @@ const Editor = {
   },
 
   onUp(e) {
-    this.mouse.down = false; this.panning = false; this.drag = null;
+    const panned = this.panning && this.panMoved;   // 真拖动过才算一次视图改动（点一下没动不记）
+    this.mouse.down = false; this.panning = false; this.panMoved = false; this.drag = null; this.dragEnd = null;
+    if (this.canvas && this.canvas.style.cursor) this.canvas.style.cursor = '';
+    if (panned) this.viewChanged();
   },
 
   onWheel(e) {
@@ -233,9 +347,38 @@ const Editor = {
     this.ox += sx - nx; this.oy += sy - ny;
     this.render();
     if (window.App) App.updateZoomLabel(Math.round(this.ppm / 60 * 100));
+    /* 连续滚轮 = 一次缩放：停顿 350ms 后才记一条视图快照 */
+    clearTimeout(this._wheelViewTimer);
+    this._wheelViewTimer = setTimeout(() => this.viewChanged(), 350);
+  },
+
+  /* 视图（平移/缩放）结束 → 通知 App 压一条视图快照:
+   * 让「平移过再改东西」的撤销不会把画面拉回平移之前的取景 */
+  viewChanged(label) {
+    if (this.onViewChange) this.onViewChange(label || 'view');
   },
 
   snapG(v) { return Math.round(v / this.GRID) * this.GRID; },
+
+  /* 按住 Shift 的正交锁定: 以 (bx,by) 为基准，把指针锁到水平/垂直轴上（取偏移大的那根轴为自由轴）。
+   * 返回 { x, y, axis }，axis: 'h' 水平（y 对齐基准）/ 'v' 垂直（x 对齐基准）/ null 未锁 */
+  lockAxis(bx, by, wx, wy) {
+    if (!shiftHeld) return { x: wx, y: wy, axis: null };
+    if (Math.abs(wx - bx) >= Math.abs(wy - by)) return { x: wx, y: by, axis: 'h' };
+    return { x: bx, y: wy, axis: 'v' };
+  },
+
+  /* 画墙取点（预览线 / 起点 / 落点共用，保证所见即所得）:
+   * 先正交锁定 → 再吸附 → 吸附把点拉离锁定轴时退回锁定轴（只保留同轴端点吸附） */
+  wallPoint(wx, wy) {
+    if (!this.wallStart) return this.snap(wx, wy, null);
+    const bx = this.wallStart[0], by = this.wallStart[1];
+    const L = this.lockAxis(bx, by, wx, wy);
+    const [sx, sy] = this.snap(L.x, L.y, null);
+    if (L.axis === 'h' && Math.abs(sy - L.y) > 1e-6) return [sx, L.y];
+    if (L.axis === 'v' && Math.abs(sx - L.x) > 1e-6) return [L.x, sy];
+    return [sx, sy];
+  },
 
   projT(w, px, py) {
     const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
@@ -257,26 +400,57 @@ const Editor = {
 
   hitTest(wx, wy) {
     if (!this.floor) return null;
-    const tol = 0.2;
-    // 设备 / 家具优先
+    // 设备优先（点状物）
     for (let i = this.floor.devices.length - 1; i >= 0; i--) {
       const d = this.floor.devices[i];
       if (Math.hypot(wx - d.x, wy - d.y) < 0.3) return { kind: 'device', item: d };
     }
+    // 门窗先于家具: 门窗是墙上的细长符号，家具包围盒常盖到墙上 —— 家具先判会把
+    // 点在窗户/门上的点击整个抢走（表现为「很难点中窗户」）。
+    // 判定用「到洞口线段的距离」而不是中心点圆：细长符号两端也能点中，也不误抢两侧
+    for (let i = this.floor.doors.length - 1; i >= 0; i--) {
+      const o = this.floor.doors[i];
+      if (this.hitOpening(o, wx, wy)) return { kind: 'door', item: o };
+    }
+    for (let i = this.floor.windows.length - 1; i >= 0; i--) {
+      const o = this.floor.windows[i];
+      if (this.hitOpening(o, wx, wy)) return { kind: 'window', item: o };
+    }
     for (let i = this.floor.furniture.length - 1; i >= 0; i--) {
       const f = this.floor.furniture[i];
       const S = furnSpec(f);   // 尺寸从目录形态解析
+      const tol = 0.2;
       if (Math.abs(wx - f.x) < S.w * ((f.pct || 100) / 100) / 2 + tol && Math.abs(wy - f.y) < S.d * ((f.pct || 100) / 100) / 2 + tol) return { kind: 'furniture', item: f };
     }
-    for (let i = this.floor.doors.length - 1; i >= 0; i--) {
-      const d = this.floor.doors[i];
-      if (Math.hypot(wx - d.x, wy - d.y) < 0.45) return { kind: 'door', item: d };
+    const hw = this.hitWall(wx, wy);
+    return hw ? { kind: 'wall', item: hw.wall } : null;
+  },
+
+  /* 门窗命中: 点击点到「洞口线段」（沿墙方向、长 o.w、中心 o.x/y）的距离 < 0.25m */
+  hitOpening(o, wx, wy) {
+    const r = (o.rot || 0) * Math.PI / 180;   // rot 存度，与设备同一单位
+    const c = Math.cos(r), s = Math.sin(r);
+    const hx = c * o.w / 2, hy = s * o.w / 2;
+    const dx = hx * 2, dy = hy * 2;
+    const l2 = dx * dx + dy * dy || 1;
+    let t = ((wx - (o.x - hx)) * dx + (wy - (o.y - hy)) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(wx - (o.x - hx + dx * t), wy - (o.y - hy + dy * t)) < 0.25;
+  },
+
+  /* 选中墙的端点圆圈命中（屏幕坐标）: 返回 { wall, end: 1|2 } 或 null。
+   * 只有「已选中的墙」才判端点 —— 未选中时先点一下选中，再点端圈拖动 */
+  hitWallEnd(sx, sy) {
+    if (!this.selection || this.selection.kind !== 'wall' || !this.floor) return null;
+    const w = this.floor.walls.find((x) => x.id === this.selection.id);
+    if (!w) return null;
+    const r = Math.max(w.t * this.ppm / 2 + 6, 14);   // 端帽半径 + 呼吸，最小 14px 好点
+    const ends = [[w.x1, w.y1, 1], [w.x2, w.y2, 2]];
+    for (const [px, py, end] of ends) {
+      const [ex, ey] = this.toScreen(px, py);
+      if (Math.hypot(sx - ex, sy - ey) <= r) return { wall: w, end };
     }
-    for (let i = this.floor.windows.length - 1; i >= 0; i--) {
-      const w = this.floor.windows[i];
-      if (Math.hypot(wx - w.x, wy - w.y) < 0.45) return { kind: 'window', item: w };
-    }
-    return this.hitWall(wx, wy) ? { kind: 'wall', item: this.hitWall(wx, wy).wall } : null;
+    return null;
   },
 
   select(kind, id, kind2) { this.selection = kind ? { kind: kind2 || kind, id } : null; if (window.App && window.App.setSelection) window.App.setSelection(this.selection); },
@@ -291,7 +465,7 @@ const Editor = {
       if (i >= 0) arr.splice(i, 1);
     }
     this.select(null);   // 两边选中态同步走 select
-    this.changed(false, 'del');
+    this.changed(false, 'del:' + kind + ':' + id);
   },
 
   /* light=拖拽中的轻量重绘; label=改动来源（历史栈据此把连续同类操作合并为一步） */
@@ -367,6 +541,34 @@ const Editor = {
         ctx.fillStyle = '#fdfdfe';
         ctx.beginPath(); ctx.arc(cx, cy, t / 2 - 1.2, 0, Math.PI * 2); ctx.fill();
       });
+      /* 选中墙: 端点叠加高亮拖拽圆（白底蓝圈）——表示端点可拖 */
+      if (sel) {
+        [[x1, y1], [x2, y2]].forEach(([cx, cy]) => {
+          ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+          ctx.fillStyle = '#fff'; ctx.fill();
+          ctx.lineWidth = 2; ctx.strokeStyle = '#3b82f6'; ctx.stroke();
+        });
+        /* 选中才显示长度（未选中不显示，避免画面堆字）；贴在墙面一侧，文字始终保持可读方向 */
+        const lenM = Math.hypot(wl.x2 - wl.x1, wl.y2 - wl.y1);
+        let rot = Math.atan2(y2 - y1, x2 - x1);
+        if (rot > Math.PI / 2) rot -= Math.PI;
+        if (rot < -Math.PI / 2) rot += Math.PI;
+        ctx.save();
+        ctx.translate((x1 + x2) / 2, (y1 + y2) / 2);
+        ctx.rotate(rot);
+        const lbl = lenM.toFixed(2) + ' m';
+        ctx.font = 'bold 11px -apple-system, system-ui, sans-serif';
+        const tw = ctx.measureText(lbl).width;
+        const ty = -(t / 2 + 8);              // 沿法线抬到墙外侧（屏幕上方那一侧）
+        ctx.fillStyle = 'rgba(255,255,255,.92)';
+        roundRect(ctx, -tw / 2 - 4, ty - 8, tw + 8, 15, 4);
+        ctx.fill();
+        ctx.fillStyle = '#1d4ed8';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(lbl, 0, ty);
+        ctx.restore();
+      }
     });
 
     // 窗（墙上蓝条）
@@ -406,10 +608,9 @@ const Editor = {
       const sel = this.selection && this.selection.kind === 'device' && this.selection.id === d.id;
       const st = HA.getState(d.entityId);
       const engine = (window.PluginEngine && PluginEngine.ready) ? PluginEngine : null;
-      /* 开/关判定跟随插件的 click.isOn（窗帘 open / 扫地机 cleaning / 音箱 playing 等复杂状态
-       * 由插件自己判断）；插件没声明时回退 HA.isOn 默认规则 */
-      const cspec = engine ? engine.clickSpec(d.type, d.style) : null;
-      const on = HA.isOnOf(d.entityId, cspec);
+      /* 开/关判定统一走 HA.deviceIsOn（按 type/style 取插件顶层 isOn：窗帘 open / 扫地机
+       * cleaning / 音箱 playing 由插件自己判断；未声明或插件抛异常时回退 HA.isOn 默认规则） */
+      const on = HA.deviceIsOn(d);
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate((d.rot || 0) * Math.PI / 180);   // 水平旋转(°)，与 3D body.rotation.y 同向（rotate 后画布上方=-Y 即设备朝向）
@@ -436,7 +637,7 @@ const Editor = {
     // 绘制预览（画墙 / ghost）
     if (this.tool === 'wall' && this.wallStart) {
       const [x1, y1] = this.toScreen(...this.wallStart);
-      const [px, py] = this.snap(this.mouse.wx, this.mouse.wy, null);
+      const [px, py] = this.wallPoint(this.mouse.wx, this.mouse.wy);
       const [x2, y2] = this.toScreen(px, py);
       const t = Math.max(4, this.WALL_T * this.ppm);
       ctx.strokeStyle = 'rgba(59,130,246,.85)';
@@ -465,6 +666,127 @@ const Editor = {
       }
       ctx.globalAlpha = 1;
     }
+    this.drawAxisHint();
+    this.drawRulers();
+  },
+
+  /* Shift 正交锁定的状态提示：鼠标旁一小行灰字「水平」/「垂直」，
+   * 生效场景 = 正在画墙（基准=起点）或正在拖墙端点（基准=另一端） */
+  drawAxisHint() {
+    let axis = null;
+    if (shiftHeld) {
+      if (this.tool === 'wall' && this.wallStart) {
+        axis = this.lockAxis(this.wallStart[0], this.wallStart[1], this.mouse.wx, this.mouse.wy).axis;
+      } else if (this.dragEnd && this.dragEnd.wall) {
+        const w = this.dragEnd.wall, first = this.dragEnd.end === 1;
+        axis = this.lockAxis(first ? w.x2 : w.x1, first ? w.y2 : w.y1, this.mouse.wx, this.mouse.wy).axis;
+      }
+    }
+    if (!axis) return;
+    const ctx = this.ctx;
+    const txt = axis === 'h' ? '水平' : '垂直';
+    const W = this.canvas.width / devicePixelRatio, H = this.canvas.height / devicePixelRatio;
+    let [sx, sy] = this.toScreen(this.mouse.wx, this.mouse.wy);
+    ctx.save();
+    ctx.font = '11px -apple-system, system-ui, sans-serif';
+    const tw = ctx.measureText(txt).width;
+    const bw = tw + 14, bh = 18;
+    let bx = sx + 16, by = sy + 16;
+    if (bx + bw > W - 4) bx = sx - 16 - bw;      // 贴边时翻到左侧/上方
+    if (by + bh > H - 4) by = sy - 16 - bh;
+    ctx.fillStyle = 'rgba(255,255,255,.92)';
+    roundRect(ctx, bx, by, bw, bh, 5);
+    ctx.fill();
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(txt, bx + bw / 2, by + bh / 2);
+    ctx.restore();
+  },
+
+  /* 上/左边缘刻度尺（钉在画布边缘，随平移缩放实时更新）:
+   * 主刻度间距按缩放自适应（保持在 56px 以上），主刻度标注米数，次级再细分 5 等份 */
+  RULER: 22,
+  drawRulers() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const W = this.canvas.width / devicePixelRatio, H = this.canvas.height / devicePixelRatio;
+    const R = this.RULER;
+    const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100];
+    let step = 100;
+    for (let i = 0; i < steps.length; i++) { if (steps[i] * this.ppm >= 56) { step = steps[i]; break; } }
+    const minor = step / 5;
+
+    ctx.save();
+    ctx.font = '10px -apple-system, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    // 尺底
+    ctx.fillStyle = 'rgba(252,253,255,.94)';
+    ctx.fillRect(0, 0, W, R);
+    ctx.fillRect(0, 0, R, H);
+    ctx.strokeStyle = 'rgba(120,132,152,.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, R - 0.5); ctx.lineTo(W, R - 0.5);      // 横尺下沿
+    ctx.moveTo(R - 0.5, 0); ctx.lineTo(R - 0.5, H);      // 竖尺右沿
+    ctx.stroke();
+
+    // 横尺（世界 x → 屏幕 x）
+    const x0 = this.toWorld(R, 0)[0], x1w = this.toWorld(W, 0)[0];
+    let i0 = Math.floor(x0 / minor), i1 = Math.ceil(x1w / minor);
+    for (let i = i0; i <= i1; i++) {
+      const v = Math.round(i * minor * 1000) / 1000;
+      const sx = v * this.ppm + this.ox;
+      if (sx < R) continue;
+      const isMajor = Math.abs(v / step - Math.round(v / step)) < 1e-6;
+      ctx.strokeStyle = isMajor ? 'rgba(90,102,124,.75)' : 'rgba(140,152,172,.5)';
+      ctx.beginPath();
+      ctx.moveTo(sx + 0.5, isMajor ? R - 9 : R - 4.5);
+      ctx.lineTo(sx + 0.5, R);
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle = '#5b6577';
+        ctx.textAlign = 'left';
+        ctx.fillText(String(Math.round(v * 10) / 10), sx + 3, R / 2 - 3);
+      }
+    }
+
+    // 竖尺（世界 y → 屏幕 y）
+    const y0 = this.toWorld(0, R)[1], y1w = this.toWorld(0, H)[1];
+    i0 = Math.floor(y0 / minor); i1 = Math.ceil(y1w / minor);
+    for (let i = i0; i <= i1; i++) {
+      const v = Math.round(i * minor * 1000) / 1000;
+      const sy = v * this.ppm + this.oy;
+      if (sy < R) continue;
+      const isMajor = Math.abs(v / step - Math.round(v / step)) < 1e-6;
+      ctx.strokeStyle = isMajor ? 'rgba(90,102,124,.75)' : 'rgba(140,152,172,.5)';
+      ctx.beginPath();
+      ctx.moveTo(isMajor ? R - 9 : R - 4.5, sy + 0.5);
+      ctx.lineTo(R, sy + 0.5);
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle = '#5b6577';
+        ctx.textAlign = 'left';
+        ctx.save();
+        ctx.translate(R / 2 - 2, sy + 3);
+        ctx.rotate(-Math.PI / 2);       // 竖排文字，自下而上读
+        ctx.fillText(String(Math.round(v * 10) / 10), 0, 0);
+        ctx.restore();
+      }
+    }
+
+    // 左上角单位块
+    ctx.fillStyle = 'rgba(243,246,251,.98)';
+    ctx.fillRect(0, 0, R, R);
+    ctx.strokeStyle = 'rgba(120,132,152,.35)';
+    ctx.beginPath();
+    ctx.moveTo(0, R - 0.5); ctx.lineTo(R, R - 0.5);
+    ctx.moveTo(R - 0.5, 0); ctx.lineTo(R - 0.5, R);
+    ctx.stroke();
+    ctx.fillStyle = '#7a8496';
+    ctx.textAlign = 'center';
+    ctx.fillText('m', R / 2, R / 2);
+    ctx.restore();
   },
 
   /* 通用兜底: 设备插件没实现 plan2d 时的中性符号（圆角方块 + 圆点），返回包围半径 */
@@ -515,14 +837,13 @@ const Editor = {
     const L = d.w * this.ppm;
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(d.rot || 0);
+    ctx.rotate((d.rot || 0) * Math.PI / 180);   // 门窗与设备同一单位（度），rotate 后画布上方=-Y 即朝向
     const engine = (window.PluginEngine && PluginEngine.ready) ? PluginEngine : null;
     const get = (id) => HA.getState(id);
-    /* 「开」判定: 插件声明了 isOn(obj, get) 则优先（按 fields 绑定的实体组合判断），
-     * 没声明回退默认规则——主实体 on/open 即开，未绑定视为关（与 3D 常闭一致） */
-    const pOn = engine ? engine.openingIsOn(kind, d.style, d, get) : null;
-    const on = pOn != null ? pOn : (() => { const st = d.entityId ? get(d.entityId) : null; return !!(st && (st.state === 'on' || st.state === 'open')); })();
-    const plan = engine ? engine.openingPlan(kind, d.style) : null;
+    /* 「开」判定走统一入口 HA.deviceIsOn（插件顶层 isOn(obj,get) → 默认规则），
+     * 与设备 2D / 3D 标签 / 大屏统计同一口径 */
+    const on = HA.deviceIsOn({ entityId: d.entityId, type: kind, style: d.style });
+    const plan = engine ? engine.devicePlan(kind, d.style) : null;
     if (plan) {
       plan(ctx, {
         L, sel, on, ppm: this.ppm,
@@ -567,5 +888,21 @@ let _uidCounter = 0;
 function uid() { return 'i' + Date.now().toString(36) + (++_uidCounter).toString(36); }
 
 let spaceHeld = false;
-window.addEventListener('keydown', (e) => { if (e.code === 'Space') spaceHeld = true; });
-window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceHeld = false; });
+let shiftHeld = false;        // 画墙 / 拖墙端点时按住 = 正交锁定
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') spaceHeld = true;
+  /* 按下 Shift 的那一刻鼠标没动 → 主动重绘一次，预览线与「水平/垂直」提示立即更新 */
+  if (e.key === 'Shift' && !shiftHeld) {
+    shiftHeld = true;
+    if ((Editor.tool === 'wall' && Editor.wallStart) || Editor.dragEnd) Editor.render();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') spaceHeld = false;
+  if (e.key === 'Shift' && shiftHeld) {
+    shiftHeld = false;
+    if ((Editor.tool === 'wall' && Editor.wallStart) || Editor.dragEnd) Editor.render();
+  }
+});
+/* 切走窗口收不到 keyup，回来自动松开（避免锁定状态卡住） */
+window.addEventListener('blur', () => { spaceHeld = false; shiftHeld = false; });

@@ -182,9 +182,17 @@ const HA = {
     });
   },
 
-  async callService(domain, service, target) {
+  /* 调用服务。data = 服务数据（entity_id 自动拆到 target，其余进 service_data）。
+   * HA websocket 的 call_service 要求 target（实体定位：entity_id/device_id/area_id）
+   * 与 service_data（服务参数，如 brightness_pct/temperature）分开传 —— 混在 target 里
+   * 会被 HA 拒绝：not a valid option at 'target.xxx' */
+  async callService(domain, service, data) {
+    const d = Object.assign({}, data || {});
+    const eid = d.entity_id;
+    delete d.entity_id;
+    const target = eid ? { entity_id: eid } : {};
     if (this.demo) return this.demoCall(domain, service, target);
-    return this.send({ type: 'call_service', domain, service, target: target || {} });
+    return this.send({ type: 'call_service', domain, service, target, service_data: d });
   },
 
   /* ---------------- 演示模式（未配置 HA 时可用） ---------------- */
@@ -274,11 +282,31 @@ const HA = {
     const u = st && st.attributes && st.attributes.unit_of_measurement;
     return u ? ' ' + u : '';
   },
-  /* 「已开启」判定统一入口: 插件 click 规格（spec.isOn）优先，未声明回退 isOn()。
-   * 2D 平面填色、3D 标签高亮、设备列表 on 标记共用这一套，别再各写三元。 */
-  isOnOf(eid, spec) {
-    if (spec && spec.isOn) return !!spec.isOn(this.getState(eid));
-    return !!this.isOn(eid);
+  /* ---------------- 「开 / 合」判定统一入口 ----------------
+   * 插件侧只有一个判定函数：register 顶层的 isOn(obj, get)。引擎侧只有 PluginEngine.isOnOf。
+   * 这里再按上下文包两层，供 UI 直接调用：
+   *   deviceIsOn(d)       有实例（2D 绘制 / 3D 标签高亮 / 统计）—— d = { entityId, type, style }
+   *   entityIsOn(eid, t)  只有实体 id（设备列表 / 大屏快捷设备），合成 { entityId, type } 交给插件
+   * 都回退到 HA.isOn（默认规则）。插件异常已在 PluginEngine.isOnOf 里 warn 并兜底，不会向外冒泡
+   * （2D 是在重绘循环里逐个设备调的，一个异常会打断整个平面层的绘制）。 */
+  deviceIsOn(d) {
+    if (!d || !d.entityId) return false;
+    const pe = window.PluginEngine;
+    if (!pe || !pe.ready || typeof pe.isOnOf !== 'function') return !!this.isOn(d.entityId);
+    // 老实例可能没写 type（放置早于该字段），按实体域兜底；门/窗调用方都会显式传 door/window
+    const type = d.type || String(d.entityId).split('.')[0];
+    const p = pe.isOnOf(type, d.style, d, (eid) => this.getState(eid));
+    return p != null ? p : !!this.isOn(d.entityId);
+  },
+
+  /* 同一个判定，但只有实体 id（实体列表、大屏快捷设备这类没有实例/造型的场景）。
+   * 插件 isOn 里依赖 fields 的判定拿不到绑定值，按「未绑定」处理 —— 插件侧要写宽容。 */
+  entityIsOn(eid, type) {
+    const pe = window.PluginEngine;
+    const t = type || String(eid || '').split('.')[0];
+    if (!pe || !pe.ready || typeof pe.isOnOf !== 'function') return !!this.isOn(eid);
+    const p = pe.isOnOf(t, null, { entityId: eid, type: t }, (x) => this.getState(x));
+    return p != null ? p : !!this.isOn(eid);
   },
 };
 

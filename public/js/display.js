@@ -82,12 +82,12 @@ createApp({
       void this.entVersion;
       return HUD.hudCards(HA, this.cur && this.cur.display);
     },
-    /* 已放置设备中开启数量 */
+    /* 已放置设备中开启数量（口径与 2D/3D 一致：插件 isOn(obj,get)，未声明回退通用规则） */
     onCount() {
       void this.entVersion;
       let on = 0;
       if (!this.cur) return 0;
-      this.cur.devices.forEach((d) => { if (HA.isOn(d.entityId)) on++; });
+      this.cur.devices.forEach((d) => { if (HA.deviceIsOn(d)) on++; });
       return on;
     },
     deviceTotal() {
@@ -135,7 +135,8 @@ createApp({
             eid,
             name: HA.friendly(eid),
             icon: dom === 'light' ? '💡' : dom === 'fan' ? '🌀' : dom === 'cover' ? '🪟' : '🔌',
-            on: HA.isOn(eid),
+            /* 快捷设备不在户型里、没有造型，按域取默认插件的 isOn（音箱 playing / 扫地机 cleaning 也算开） */
+            on: HA.entityIsOn(eid, dom),
           };
         })
         .filter(Boolean);
@@ -165,6 +166,7 @@ createApp({
       } catch (e) { /* ignore */ }
 
       await PluginEngine.loadAll();   // 加载 assets/plugins 有状态模型插件（门窗/设备）
+      this.entVersion++;              // 插件就绪 → 开关判定从默认规则切到插件 isOn，强制重算统计
       await this.$nextTick();
       View3D.init('stage');
       View3D.controls.autoRotate = this.autoRotate;

@@ -1,7 +1,7 @@
 {
   "id": "vacuum",
   "name": "扫地机器人",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "kind": "device",
   "type": "vacuum",
   "description": "清扫中（非 docked/off）时机身状态环呼吸发光，回充座状态静默"

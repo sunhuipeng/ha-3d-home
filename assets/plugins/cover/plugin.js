@@ -11,8 +11,8 @@
  *              面板/数据里的造型 id 会加 '<插件id>:' 前缀；插件里 ctx.style.id 仍是原始 id
  *       fields 扩展实体 [{ key, label, domains?, placeholder?, tip? }]
  *              绑上后值存 obj[key]，用 ctx.field*(key) 读；未绑定返回 null / ''
- *       click 点击控制 { on, off, isOn(st), label?, defaultOn?, feedback? }
- *              on/off 写服务名或 { domain, service }；isOn(st) 决定「发 on 还是发 off」；
+ *       click 点击控制 { on, off, label?, defaultOn?, feedback? }
+ *              on/off 写服务名或 { domain, service }；「当前算不算开着」由顶层 isOn(obj, get) 判定；
  *              不写 click 时按 type 取内置默认：light/switch/fan/cover = toggle，
  *              water_heater/climate = turn_on + turn_off，其它 type 不可点击；
  *              不写 isOn 时默认「state 既不是 off 也不是 unavailable 就算已开」
@@ -62,13 +62,17 @@ PluginEngine.register({
     { key: 'rainEntity', label: '雨感', domains: ['binary_sensor', 'weather'], placeholder: 'binary_sensor.xxx（可选）', tip: 'on=有雨，标签会提示' },
   ],
 
-  /* 点击: 开 / 关（cover.open_cover / close_cover）
-   * 判定: state=open 或 current_position>0 视为已打开 */
+  /* 点击: 开 / 关（cover.open_cover / close_cover） */
   click: {
     on: 'open_cover',
     off: 'close_cover',
-    isOn: (st) => !!st && (st.state === 'open' || (st.attributes && st.attributes.current_position > 0)),
     label: '打开 / 关闭',
+  },
+
+  /* 开/合判定（引擎唯一入口）: state=open 或 current_position>0 视为已打开 */
+  isOn(obj, get) {
+    const st = obj && obj.entityId ? get(obj.entityId) : null;
+    return !!st && (st.state === 'open' || !!(st.attributes && st.attributes.current_position > 0));
   },
 
   /* 标签文案: 开合状态 / 开度 + 照度/雨感 */

@@ -1,8 +1,8 @@
 {
   "id": "door",
   "name": "门",
-  "version": "1.5.0",
-  "kind": "opening",
+  "version": "1.6.2",
+  "kind": "device",
   "type": "door",
   "description": "门框(GLB) + 门扇(GLB) 组合，单开/双开两种造型；绑定门磁实体后由状态驱动开门动画（on=开），2D 平面符号由插件 plan2d() 自绘。卷帘门已拆到 custom/plugins/door_rolling（同 type=\"door\" 聚合进同一个门样式下拉）"
 }

@@ -1,17 +1,18 @@
 # 插件开发手册 · PLUGIN-DEV
 
 > 适用: `assets/plugins/`（内置）与 `custom/plugins/`（自定义）下的所有 3D 表现插件。
-> 读完这一份就能写设备、门窗、地面背景三类插件；每节都带可直接跑的最小示例。
+> 读完这一份就能写设备、门/窗、地面背景插件；每节都带可直接跑的最小示例。
 
-三类插件一目了然：
+**插件只有两类**（`kind` 只区分这两种）：
 
 | kind | 管什么 | 注册要点 | 现成插件 |
 |---|---|---|---|
-| `device` | 有状态的设备造型（灯、开关、空调、窗帘…） | `type` + `styles[]` + `model3d(ctx)`，可选 `click` / `stateText` / `plan2d` | light / switch / fan / cover / climate（内置） |
-| `opening` | 门、窗（洞口内的动态开合） | `type` 为 `door` / `window`，实体全部用 `fields` 绑；可选 `plan2d` / `isOn` | door / window（内置）+ door_rolling / window_fixed（自定义） |
-| `background` | 房屋外围地面 | `styles[]`，每项一个可选背景，`apply(ctx)` 返回 3D 模型 | background（内置）+ garden（自定义） |
+| `device` | **设备 / 门 / 窗统一的一类**，靠 `type` 区分 | `type` + `styles[]` + `model3d(ctx)`，可选 `click` / `stateText` / `plan2d` / `isOn` / `labels` | 设备：light / switch / fan / cover / climate / sensor / camera / vacuum / speaker / water_heater（内置 10 个）；门：`type:'door'`（内置 door + 自定义 door_rolling）；窗：`type:'window'`（内置 window + 自定义 window_fixed） |
+| `background` | 房屋外围地面 | `styles[]`，每项一个可选背景，`apply(ctx)` 返回 3D 模型 | background + garden（均内置） |
 
-> **`type` 是唯一的类型键（device / opening 共用）**：device 填 HA 实体类型（`light` / `switch`…），opening 填洞口类型（`door` / `window`）。**同一个 `type` 可以由多个插件共同提供造型**，引擎把它们的 `styles` 合并展示——门窗的「多插件」（如内置 `door` + `custom/plugins/door_rolling`）就是靠这个机制。
+> **门 / 窗不是单独的插件类别**：它就是 `type` 为 `'door'` / `'window'` 的 `device` 插件，建造、拾取、标签、点击开关全部走与设备相同的代码路径（`buildDevice` / `pickGroups` / `toggleDevice`），`plugin.json` 里写 `kind: "device"`。写门窗插件唯一要额外注意的是：门窗实例的实体**没有主实体**，全部用 `fields` 声明。
+> **`type` 是唯一的类型键**：设备填 HA 实体类型（`light` / `switch`…），门 / 窗填 `door` / `window`。**同一个 `type` 可以由多个插件共同提供造型**，引擎把它们的 `styles` 合并展示——门窗的「多插件」（如内置 `door` + `custom/plugins/door_rolling`）就是靠这个机制。
+> **墙体掏洞（门洞 / 窗洞）与插件无关**：引擎在 `buildWall` 时按 `floors.doors` / `floors.windows` 的位置给墙面开洞，这段逻辑独立于插件，插件只负责洞口里的那扇门/窗长什么样、怎么开合。**门窗数据仍然存放在 `floors.doors` / `floors.windows`，没有和 `devices` 合并。**
 > **选中某个样式 = 交给该样式所属插件全权负责**：`model3d` / `plan2d` / `click` / `stateText` / `fields` 都取那一份（统一入口 `PluginEngine.defFor(type, styleId)`；不确定样式时 `PluginEngine.defOf(type)` 拿该 `type` 的第一个插件），未选样式才回退到该 `type` 的第一个插件。所以各插件可以声明**数量不同的 `fields`**：属性面板的扩展实体区会随样式切换，切到没有 `fields` 的插件时整区隐藏。
 > 注意区分三个同名字段，它们属于不同对象：插件注册里的 `type`（归属类型）、实例数据里的 `obj.type`（设备 = HA 实体类型，门窗没有该字段）、家具目录里的 `item.type`（家具类型枚举）。
 
@@ -37,8 +38,8 @@ custom/plugins/<目录名>/
 | `id` | ✅ | 插件唯一标识。内置门窗用 `door` / `window`，自定义门窗插件 id 任意（靠 `type` 归类）；与内置同 id 即覆盖 |
 | `name` | ✅ | 面板显示名 |
 | `version` | ✅ | **缓存版本号**。plugin.js 以 `plugin.js?v=<version>` 加载并长缓存，**改了代码必须升这个号**，否则浏览器用旧文件 |
-| `kind` | ✅ | `device` / `opening` / `background` |
-| `type` | device / opening 必填 | 插件归属的类型键。device = 设备类型，必须是 `DEVICE_TYPES` 的键：`light` `switch` `sensor` `climate` `water_heater` `cover` `fan` `media_player` `vacuum` `camera` `other`；opening = 洞口类型 `door` / `window` |
+| `kind` | ✅ | 只有两种：`device`（设备 / 门 / 窗）或 `background`（外围地面） |
+| `type` | 模型插件必填 | 插件归属的类型键。设备 = HA 实体类型，必须是 `DEVICE_TYPES` 的键：`light` `switch` `sensor` `climate` `water_heater` `cover` `fan` `media_player` `vacuum` `camera` `other`；门 / 窗 = `door` / `window` |
 | `description` | — | 插件说明，仅展示 |
 | `entry` | — | 自定义入口路径，默认 `<插件目录>/plugin.js`，一般不用写 |
 
@@ -60,13 +61,13 @@ HA 实体状态变化 → 引擎回调实例 update()
 
 ---
 
-## 1. 通用部分（三类插件都适用）
+## 1. 通用部分（两类插件都适用）
 
 ### 1.1 坐标与单位
 
 | 概念 | 说明 |
 |---|---|
-| 单位 | 全部是米（m），角度一律弧度 |
+| 单位 | 全部是米（m）；`obj.rot` 全链统一存「度」（°）——设备/门/窗同一单位，2D/3D/面板不再各自换算 |
 | 2D → 3D | 2D 编辑器平面 `(x, y)` → 3D 世界 `(x, z)`；3D 的高度方向是 **y 轴** |
 | group 原点 | 门/窗 = 洞口地面中心；设备 = 该设备的锚点（离地高度 `d.z` 或造型 `styles[].z`） |
 | 谁负责摆位 | **引擎**负责 `position` 与 `rotation.y`，插件只在自己的 group 内部组装，不要再加整体偏移 |
@@ -81,10 +82,10 @@ HA 实体状态变化 → 引擎回调实例 update()
 | 成员 | 类型 | 说明 |
 |---|---|---|
 | `ctx.THREE` | 命名空间 | Three.js，创建 Group / 几何 / 材质 / 灯光都用它 |
-| `ctx.obj` | object | 当前实例数据（设备或门窗），字段见第 2.4 / 3.2 节 |
-| `ctx.style` | object \| undefined | **device 与 opening 都会传**：当前造型条目 `{ id, name, sid, plugin, z?, labelOffset?, icon?, model?, desc?, options? }`。`id` 已去掉插件前缀（`sid` 是插件内部原始 id，两者一般相同），`plugin` 是这条造型属于哪个插件，`options` 是参数的原始 schema（当前值看 `ctx.options`）。opening 没有 `z` |
+| `ctx.obj` | object | 当前实例数据（设备 / 门 / 窗），字段见第 2.4 / 3.2 节 |
+| `ctx.style` | object \| undefined | **设备与门窗都会传**：当前造型条目 `{ id, name, sid, plugin, z?, labelOffset?, icon?, model?, desc?, options? }`。`id` 已去掉插件前缀（`sid` 是插件内部原始 id，两者一般相同），`plugin` 是这条造型属于哪个插件，`options` 是参数的原始 schema（当前值看 `ctx.options`） |
 | `ctx.options` | object | **当前样式的参数取值**，如 `{ hand:'left', open:'in' }`。已经「条目 `def` ∪ 实例 `obj.styleOpts`」合并好，直接读即可；样式没声明 `options` 时是 `{}`。详见 2.2.1 |
-| `ctx.wallH` | number | 当前楼层净高（米），吸顶灯/吊灯贴顶、门窗按层高兜底都用它 |
+| `ctx.wallH` | number | 当前楼层净高，吸顶灯/吊灯贴顶、门窗按层高兜底都用它 |
 | `ctx.baseUrl` | string | 插件目录 URL，一般不用直接拼，用 `ctx.glb()` 即可 |
 | `ctx.view` | View3D | 高级用法：`view.scene`、`view.loadModel()`、`view.render()`。日常只需 `ctx.render()` |
 
@@ -176,8 +177,9 @@ update() {
 | `domains` | — | 限定实体域，如 `['sensor','binary_sensor']` |
 | `placeholder` | — | 输入框提示 |
 | `tip` | — | 行尾说明文字 |
+| `valueType` / `enumValues` | — | **studio 附加的说明字段**（`valueType`: `number` 数值类 / `text` 字符类 / `enum` 枚举类；`enumValues`: 枚举候选值数组）。home 引擎不读、原样透传；从 studio 项目同步 schema 时照抄保留，不要删 |
 
-> `device` 插件的主实体由「设备绑定」管理，**不要再把 `entityId` 写进 `fields`**；`opening`（门/窗）没有主实体概念，所以字段全部用 `fields` 声明。
+> `device` 插件的主实体由「设备绑定」管理，**不要再把 `entityId` 写进 `fields`**；门 / 窗没有主实体概念，所以字段全部用 `fields` 声明。
 >
 > **同 `type` 多插件时，`fields` 是「每个插件各写各的」**：属性面板展示的永远是**当前选中样式所属插件**声明的那份字段（切换样式即换一份，该插件没声明 `fields` 就整区隐藏）。别把一个形状的专属实体写进同 `type` 的另一个插件里——宁可每个插件各自声明，也不要为了「合并显示」去堆共享字段。
 
@@ -189,13 +191,19 @@ update() {
 | `update()` | `() => void` | HA 实体状态变化后（引擎批量回调所有实例） | 建议 |
 | `dispose()` | `() => void` | 场景重建 / 设备删除前 | 可选 |
 | `ctx.animate(fn)` | `fn(dt: number)` | 每帧 | 可选 |
-| `stateText(st, obj, get)` | 返回 string | 每条状态更新时算标签文案 | 可选（device） |
-| `click.on/off` | 服务名或 `{service, domain}` | 用户点击设备时 | 可选（device） |
-| `click.isOn(st)` | 返回 boolean | 判断「当前是否开启」：决定点哪个服务、3D 高亮、**2D 平面图开/关底色**；插件没声明时回退默认判定（`state` 非 `off`/`unavailable` 等） | 可选（device） |
+| `stateText(st, obj, get)` | 返回 string | 每条状态更新时算标签文案 | 可选（设备与门窗都支持） |
+| `click.on/off` | 服务名或 `{service, domain}` | 用户点击设备 / 门窗时 | 可选（设备缺省有内置语义；门窗必须自己声明） |
+| `isOn(obj, get)` | 返回 boolean \| null | **开/合判定的唯一入口**：决定点哪个服务、3D 高亮、**2D 平面图开/关底色**、统计口径。设备与门/窗都写在这（设备：窗帘 `open`、扫地机 `cleaning`、音箱 `playing`；门窗：多实体组合）。返回 `null` = 我不判定，引擎回退默认规则。见 3.2.3 | 可选 |
+| `labels` | boolean | 是否要 3D 状态标签。**门 / 窗缺省 `false`**（避免洞口旁挂一堆字），设备缺省 `true`；注册时定死，实例不再判断 | 可选 |
+| `z` | number | 锚点离地高度缺省（实例 `obj.z` 优先）。门/窗贴地声明 `0`；设备缺省走目录造型 `z`，再兜底 `1.2` | 可选 |
+| `hitY` | number | 锚点热球（保底拾取热区）球心高度：窗 `1.4` / 门 `1.1`，缺省 `0`（= 锚点处） | 可选 |
+| `labelOffset` | number | 标签相对锚点的抬升缺省：door `1.05` / window `1.45`，设备缺省 `0.3`（造型 `styles[].labelOffset` 与实例 `obj.labelOffset` 可再覆盖） | 可选 |
+| `labelBaseY` | number | 3D 标签锚点基准高度（门/窗 = 模型竖直中部）；不声明则回退锚点高度（设备 = `devY`） | 可选 |
+| `defaultW` | number | 编辑器放置缺省宽度：door `0.9` / window `1.2` | 可选 |
+| `placeholder` | `{ w, h, color, y }` | 无插件/创建失败时的占位薄板（`y` 缺省 `h/2`） | 可选 |
 | `apply(ctx)` | 返回 `{ group }`（可附 `refresh` / `update` / `size`） | 背景被选用时 | background ✅ |
 | `update(t, api)` | `t` 秒、`api` 句柄 | `refresh > 0` 时按 Hz 调用 | 可选（background） |
-| `plan2d(c, p)` | `(CanvasRenderingContext2D, p) => number \| void`（device 返回包围半径 px，opening 可无返回） | 编辑器重绘 2D 平面图时（按需渲染，不是 rAF 每帧） | 可选（opening 见 3.2.2，device 见 2.8） |
-| `isOn(obj, get)` | 返回 boolean | 编辑器画 2D 平面图时判定门窗是否打开（决定填充色） | 可选（opening 见 3.2.3；device 用 `click.isOn`） |
+| `plan2d(c, p)` | `(CanvasRenderingContext2D, p) => number \| void` | 编辑器重绘 2D 平面图时（按需渲染，不是 rAF 每帧）；建议返回包围半径 px | 可选（见 2.8 / 3.5） |
 
 ### 1.5 通用注意事项
 
@@ -205,7 +213,7 @@ update() {
 4. **改代码升版本**：`plugin.json` 的 `version` 不变，浏览器会一直用缓存的旧 plugin.js。
 5. **异步 `model3d` 要注意场景已换代**：引擎会丢弃过期实例，但你自己的定时器/事件监听要在 `dispose()` 里清掉。
 6. **调试日志**：生产模式 `window.__HA_DBG === false` 会静默，开发时可在控制台置 `true`；错误统一前缀 `[plugin:<id>]`。
-7. **整个文件包一层 IIFE**：所有 `plugin.js` 都是用 `<script>` 独立加载的**经典脚本**，共享同一个全局作用域。两个插件都写顶层 `const ico = …` 会直接 SyntaxError，后面的插件全部注册不上。内置 13 个插件（10 个设备 + 门 + 窗 + 1 个背景；庭院铺装 `garden` 已挪到 `custom/plugins/`）现在都是 `'use strict';` + `(function () { … })();` 的写法，照抄即可。
+7. **整个文件包一层 IIFE**：所有 `plugin.js` 都是用 `<script>` 独立加载的**经典脚本**，共享同一个全局作用域。两个插件都写顶层 `const ico = …` 会直接 SyntaxError，后面的插件全部注册不上。内置 14 个插件（10 个设备 + 门 + 窗 + 2 个背景：background 与 garden）现在都是 `'use strict';` + `(function () { … })();` 的写法，照抄即可。
 
 ### 1.6 引擎提供的小工具（`PluginEngine.*`）
 
@@ -215,12 +223,17 @@ update() {
 |---|---|---|
 | `PluginEngine.ico(inner)` | SVG 内片段 → string | 包成 24×24、`fill:none`、`stroke:currentColor`、`stroke-width:1.7` 的线性 SVG（跟随主题色）。`const ico = PluginEngine.ico;` 后照常 `ico('<path …/>')` |
 | `PluginEngine.fieldBits(obj, get, list)` | 见 1.3 | 把扩展实体数值拼成 `' · 320W'` 这样的尾巴 |
-| `PluginEngine.isOnState(st)` | 状态对象 → boolean | **二态开判定**：`state === 'on'` 或 `'open'` 算开（门磁 / 窗磁 / 人体感应的通用口径）。`click.isOn` 想声明「就看 on/open」可直接引用它 |
+| `PluginEngine.isOnState(st)` | 状态对象 → boolean | **二态开判定**：`state === 'on'` 或 `'open'` 算开（门磁 / 窗磁 / 人体感应的通用口径）。`isOn(obj,get)` 里想表达「就看 on/open」可直接引用它 |
 | `PluginEngine.runningState(st, opts?)` | 状态对象 → boolean | **运行态判定**：只要不是 `off` / `unavailable` 就算在运行，覆盖 `cleaning` / `playing` / `cool` / `heat` 这类多模式域；个别域用 `off` 表示待机时传 `{ countOff: true }` |
 | `PluginEngine.baseStateText(st, map?)` | 状态对象、可选映射表 → string | 标签文案底座：默认 `{ on:'已开启', off:'已关闭' }`，表里没有的状态原样返回（`unavailable` → `'unavailable'`）。要换词就传 `map`，如 `baseStateText(st, { off: '已断电' })`（传了 map 就整体替换默认表） |
 | `PluginEngine.defFor(type, styleId)` | 类型 + 聚合样式 id → 插件定义 \| null | 查「这个造型由哪个插件负责」，`fields` / `plan2d` / `click` / `stateText` 全走它；调试时很好用 |
 | `PluginEngine.styles(type)` | 类型 → 造型数组 | 某类型的全部造型（`id` 带 `<插件id>:` 前缀，`sid` 是插件内部 id，`plugin` 是所属插件） |
-| `PluginEngine.labelOffset(type, styleId)` | 类型 + 样式 → number | 该造型的标签抬升高度（米），缺省 0.3 |
+| `PluginEngine.labelOffset(type, styleId)` | 类型 + 样式 → number | 该造型的标签抬升高度（米）：实例 > 造型 `labelOffset` > 插件 `def.labelOffset` > 缺省 `0.3`（门/窗的高度由各自插件声明） |
+| `PluginEngine.labelBaseY(type, styleId)` | 类型 + 样式 → number \| null | 3D 标签锚点基准高度（插件 `def.labelBaseY` 声明，如门/窗模型中部）；未声明返回 `null`，调用方回退锚点高度 |
+| `PluginEngine.wantsLabel(type, styleId)` | 类型 + 样式 → boolean | 该类型实例是否显示 3D 标签（`register` 的 `labels`，门/窗缺省 `false`） |
+| `PluginEngine.isOnOf(type, styleId, obj, get)` | → boolean \| null | **插件判定的唯一入口**：调插件顶层 `isOn`，`get` 省略时走 `HA.getState`；返回 `null` 表示插件不判定 |
+| `HA.deviceIsOn(d)` | `{ entityId, type, style }` → boolean | 有实例时的包装（2D 底色、3D 标签高亮、统计、点击方向全用它）：`isOnOf` → `HA.isOn` 默认规则 |
+| `HA.entityIsOn(eid, type)` | 实体 id + 类型 → boolean | 没有实例/造型时用（实体列表、大屏快捷设备）：合成 `{entityId, type}` 交给插件 |
 
 ```js
 const ico = PluginEngine.ico;
@@ -238,20 +251,23 @@ PluginEngine.register({
 
 ---
 
-## 2. `device` 插件（设备造型）
+## 2. `device` 插件（设备 / 门 / 窗造型）
 
 ### 2.1 注册对象字段
 
 ```js
 PluginEngine.register({
   id: 'myplug',            // 唯一 id，同 id 覆盖内置
-  kind: 'device',
-  type: 'switch',         // 必须与 HA 实体域对应，决定出现在哪个设备分类
+  kind: 'device',          // 设备 / 门 / 窗都是这个
+  type: 'switch',         // 必须与 HA 实体域对应，决定出现在哪个设备分类；门/窗填 'door' / 'window'
   name: '我的插座',
+  labels: true,           // 可选：是否显示 3D 状态标签，设备缺省 true、门/窗缺省 false
   styles: [ /* 造型列表，见 2.2 */ ],
-  fields: [ /* 扩展实体，见 1.3 */ ],
-  click: { /* 点击控制，见 2.3 */ },
+  fields: [ /* 扩展实体，见 1.3；门/窗的全部实体都写在这里 */ ],
+  click: { /* 点击控制，见 2.3；门/窗必须自己写，没有内置默认 */ },
   stateText(st, obj, get) { /* 标签文案，见 2.3 */ },
+  isOn(obj, get) { /* 顶层开/合判定，可组合多实体，见 3.2.3 */ },
+  plan2d(c, p) { /* 2D 平面图形，见 2.8 */ },
   model3d(ctx) { /* 见 2.5 */ },
 });
 ```
@@ -335,20 +351,48 @@ plan2d(c, p) {
 - 同一造型的**不同实例各存各的**：A 门左开、B 门右开互不影响
 - 面板「样式参数」区只在当前样式声明了 `options` 时出现
 
-### 2.3 `click` 与 `stateText`
+### 2.3 `click`、`isOn` 与 `stateText`
 
 ```js
 click: {
   on: 'turn_on',                        // 或 { service: 'media_play', domain: 'media_player' }
   off: 'turn_off',
-  isOn: (st) => !!(st && st.state === 'playing'),   // 参数是状态对象，不是实体 id
   label: '播放 / 暂停',                  // 属性面板勾选文案
   defaultOn: false,                     // 默认不启用点击（纯展示设备用）
   feedback: true,                       // 执行后弹一条提示（动作没有可见状态变化时用）
-}
+},
+
+/* 高级用法：on / off 也可以是自定义函数（带参数 / 多步 / 条件动作时用）。
+ * 方向仍由引擎按 isOn 驱动（关着调 on、开着调 off），函数只决定「怎么做」：
+ *   fn(obj, api) — obj 是实例数据；api = { call(dom, svc, data), get(eid), toast(msg), obj }
+ * 函数内自己发服务，不受「必须绑定实体」限制；同步抛错 / Promise 拒绝都会被引擎拦住弹提示。
+ * 实例在下拉里选了「点击动作」时仍会覆盖函数（字符串服务对优先级最高）。
+ */
+click: {
+  on(obj, api) {                        // 例：空调一键 23°C 制冷
+    api.call('climate', 'set_temperature', { entity_id: obj.entityId, temperature: 23 });
+    api.toast('已调到 23°C');
+  },
+  off: 'turn_off',                      // 字符串和函数可混用
+  label: '制冷 23°C',
+},
+
+/* 「当前算不算开着」—— 唯一判定入口（设备、门、窗同一套）。
+ * click 里没有 isOn：判定和"点下去发什么"分开，2D 底色 / 3D 高亮 / 统计 / 点击方向共用这一个结论 */
+isOn(obj, get) {
+  const st = obj.entityId ? get(obj.entityId) : null;
+  return !!(st && st.state === 'playing');   // obj = 实例数据，get = (eid) => 状态对象
+},
 ```
 
 未声明 `click` 时按 `type` 取内置默认：`light` / `switch` / `fan` / `cover` 用 `toggle`，`water_heater` / `climate` 用 `turn_on` / `turn_off`；其余类型默认「不可点击」。
+
+`isOn` 返回 `null`（或不实现）= 「我不判定」，引擎回退默认规则：主实体 `on`/`open` 即开，未绑定视为关。常用写法：
+
+```js
+isOn(obj, get) { return PluginEngine.runningState(obj.entityId ? get(obj.entityId) : null); },  // 空调/热水器：非 off 即在运行
+isOn(obj, get) { return PluginEngine.isOnState(obj.entityId ? get(obj.entityId) : null); },     // 只看 on/open
+```
 
 `stateText(st, obj, get)`：`st` 是主实体状态，`obj` 是实例数据（含 `fields` 绑定值），`get(eid)` 可直接读任意实体。返回空字符串则回退通用文案。
 
@@ -484,7 +528,7 @@ PluginEngine.register({
 
 | 视觉 | 谁负责 | 怎么做 |
 |---|---|---|
-| 开 / 关（判定） | 插件声明则优先 | 状态判定跟随 `click.isOn(st)`（窗帘 `open`、扫地机 `cleaning`、音箱 `playing` 等复杂状态由插件判断）；没声明时回退默认规则（`HA.isOn`）。插件不用在 `plan2d` 里重复判断，只管拿 `p.on`/`p.fill` 画 |
+| 开 / 关（判定） | 插件声明则优先 | 状态判定跟随顶层 `isOn(obj, get)`（窗帘 `open`、扫地机 `cleaning`、音箱 `playing` 等复杂状态由插件判断）；没声明时回退默认规则（`HA.isOn`）。插件不用在 `plan2d` 里重复判断，只管拿 `p.on`/`p.fill` 画 |
 | 开 / 关（上色） | 抽象层给色 + 插件填充 | 调色板按状态给 `p.fill`（开=`#fdeecb` 暖琥珀 / 关=`#fff`），`plan2d` 把它填进**线稿封闭形状内部**——贴合线框，透明角落不着色；没有封闭形状的符号（灯带/窗帘）画一条贴合的圆角底条 |
 | 选中 / 未选中 | 抽象层 | 模型画完后叠加**蓝色虚线圆环**：线稿小 → 贴合包裹（包围半径+4px）；线稿大 → 封顶 `SEL_RING_MAX`(26px) 后叠加画在线稿之上，作为选中标记 |
 | 实体未连接 | 抽象层 | 调色板把 `p.ink` 换成红色，插件不用管 |
@@ -539,22 +583,28 @@ PluginEngine.register({
 - 插件没写 `plan2d` 时，编辑器画「圆角方块 + 圆点」的中性符号兜底 —— 不写也能用
 - 内置 10 个设备插件都实现了 `plan2d`（灯/开关/传感器/空调/摄像头/窗帘/风扇/扫地机/音箱/热水器），直接抄最方便
 
-## 3. `opening` 插件（门 / 窗）
+## 3. 门 / 窗（`type: 'door'` / `'window'` 的贴墙设备）
 
-### 3.1 与 device 的区别
+> **门和窗不是另一类插件**，就是 `kind: 'device'`、`type` 为 `'door'` / `'window'` 的模型插件。注册契约（`styles` / `fields` / `click` / `stateText` / `plan2d` / `isOn` / `labels` / `model3d`）与设备**一字不差**，引擎内部也走同一条建造路径（`buildDevice`）、同一张拾取表（`pickGroups`）、同一个点击入口（`toggleDevice`）、同一条开合判定链（`HA.deviceIsOn`）。所以本节只讲**门窗与普通设备不一样的那几点**，其余全部照第 2 章写。
 
-| | device | opening |
+### 3.1 与设备的差异（只有这几条）
+
+| | 设备 | 门 / 窗 |
 |---|---|---|
-| `kind` | `'device'` | `'opening'` |
-| `type` | 实体类型（`light` / `switch` / `fan`…），必填 | **洞口类型**（`'door'` / `'window'`），必填 |
-| `id` | 自定义（同 type 可有多个插件） | 自定义（内置为 `door` / `window`，同 type 可有多个插件） |
-| 造型 | `styles[]` 多造型 | **`styles[]` 也支持**（单开门/双开门/卷帘门…），区别是没有 `z`（高度由洞口决定） |
-| 主实体 | `obj.entityId`（设备绑定） | 无，实体全部用 `fields` 声明（`entityId` / `posEntityId`） |
-| 位置 | 设备锚点（可改离地高度） | 洞口中心，落地，旋转跟随墙 |
+| `kind` | `'device'` | `'device'`（**一样**） |
+| `type` | HA 实体类型（`light` / `switch` / `fan`…） | `'door'` / `'window'` |
+| 数据存放 | `floors[].devices[]` | `floors[].doors[]` / `floors[].windows[]`（**没有和 devices 合并**） |
+| 主实体 | `obj.entityId`（属性面板「设备绑定」） | 无主实体概念，**实体全部用 `fields` 声明**（`entityId` / `posEntityId`） |
+| 位置 | 自由摆放，`obj.z` 可调离地高度 | 贴在墙上（`obj.x/y` + `obj.rot`（度）跟随墙体），墙上自动掏洞 |
+| 离地高度 | `obj.z ?? 造型 z ?? 1.2` | **门恒为 0，不可调**；窗 `obj.z ?? 0` 可调（模型自带 0.9m 窗台，`z` 是整体抬升） |
+| 标签 | 缺省显示，锚点 `0.3m` | **缺省不显示**（`labels` 缺省 `false`），要显示写 `labels: true`；锚点高度由插件声明（door `labelBaseY: 1.05` / window `1.45`） |
+| `click` | 不写也有内置语义（toggle 主实体） | **没有任何内置默认**，要点击开关必须自己声明 `click.on` / `click.off` |
+| `plan2d` | 画在设备锚点 | 画在洞口中心，画布已旋转到墙方向 |
 
-> 门窗的多造型与设备**完全同一套机制**：`register` 里声明 `styles`，引擎聚合时加 `<插件id>:` 前缀，用户选中后写入 `obj.style`，`model3d(ctx)` 读 `ctx.style.id` 决定画哪种；没选过就走 `styles[0]`（老数据自动落到第一项，不会坏）。
+> **墙体掏洞是引擎的事，跟插件无关**：引擎 `buildWall` 时按 `floors.doors` / `floors.windows` 的位置与 `w` 在墙上开洞，插件只负责洞口里那扇门/窗长什么样、怎么开合。所以把门窗插件写坏（甚至报错）也不会把墙挖漏——最差是洞口空着。
+> **门窗的多造型与设备完全同一套机制**：`register` 里声明 `styles`，引擎聚合时加 `<插件id>:` 前缀，用户选中后写入 `obj.style`，`model3d(ctx)` 读 `ctx.style.id` 决定画哪种；没选过就走 `styles[0]`（老数据自动落到第一项，不会坏）。
 
-> **`type` 是唯一的分组键，设备与门窗共用**：设备的 `type` 是实体类型，门窗的 `type` 是洞口类型。所以「一个洞口类型由多个插件共同提供造型」就是**多个插件写同一个 `type`**：内置 `door`（`type:'door'`）与 `custom/plugins/door_rolling`（同样 `type:'door'`）的 `styles` 自动合并进同一个门样式下拉。拆出去的插件自带 `model3d` / `plan2d` / `isOn`，互不干扰——现成例子：`door_rolling`（卷帘门）、`window_fixed`（固定窗）。
+> **`type` 是唯一的分组键**：设备的 `type` 是实体类型，门窗的 `type` 是 `'door'` / `'window'`。所以「一个类型由多个插件共同提供造型」就是**多个插件写同一个 `type`**：内置 `door`（`type:'door'`）与 `custom/plugins/door_rolling`（同样 `type:'door'`）的 `styles` 自动合并进同一个门样式下拉。拆出去的插件自带 `model3d` / `plan2d` / `isOn` / `click`，互不干扰——现成例子：`door_rolling`（卷帘门）、`window_fixed`（固定窗）。
 
 ### 3.2 `obj` 字段（门窗实例数据）
 
@@ -564,8 +614,10 @@ PluginEngine.register({
 | `rot` | 沿墙方向（度，引擎已应用） |
 | `w` | 洞口宽度（米），门框/窗框要按它自适应 |
 | `swing` | 可选字段：未绑门磁时 **3D** 门扇的静态开角（rad，缺省 1.1）。旧实例可能没有这个字段，读的时候写 `obj.swing != null ? obj.swing : 1.1` |
-| `style` | 用户选中的样式，形如 `'door:double'` / `'door_rolling:rolling'`；**可能不存在**，缺省 = 该 kind 的 `styles[0]` |
+| `style` | 用户选中的样式，形如 `'door:double'` / `'door_rolling:rolling'`；**可能不存在**，缺省 = 该 `type` 的 `styles[0]` |
 | `styleOpts` | 该实例的样式参数取值（如 `{ hand:'right', open:'in' }`），插件读 `ctx.options` / `p.options` 即可 |
+| `z` | **仅窗有**：整体离地抬升（米，`0` 起，属性面板可调）。门恒为 `0`，读到的永远是 `undefined` 或 `0` |
+| `labelOffset` | 可选：该实例的标签高度覆盖（缺省由插件 `def.labelOffset` 声明：门 `1.05` / 窗 `1.45`），属性面板「标签高度」写入 |
 | `entityId` | `fields` 里声明的实体（门磁 / 窗磁） |
 | `posEntityId` | 窗专用：开度实体 |
 
@@ -576,7 +628,7 @@ PluginEngine.register({
 ```js
 // ① 内置插件：id 与 type 同名
 PluginEngine.register({
-  id: 'door', kind: 'opening', type: 'door', name: '门',
+  id: 'door', kind: 'device', type: 'door', name: '门',
   styles: [
     { id: 'single', name: '单开门', desc: '单扇平开，铰链在左', icon: '<svg…>' },
     { id: 'double', name: '双开门', desc: '两扇对开' },
@@ -590,8 +642,9 @@ PluginEngine.register({
 
 // ② 拆出去的插件（custom/plugins/door_rolling）：type 写同一个 'door'
 PluginEngine.register({
-  id: 'door_rolling', kind: 'opening', type: 'door', name: '卷帘门',
+  id: 'door_rolling', kind: 'device', type: 'door', name: '卷帘门',
   styles: [{ id: 'rolling', name: '卷帘门', desc: '帘片向上卷入门洞上方卷轴箱' }],
+  click: { on: 'open_cover', off: 'close_cover', domain: 'cover' },   // 门窗的 click 必须自己写
   plan2d(c, p) { /* 自己的平面符号：虚线开口 */ },
   isOn(obj, get) { /* 自己的判定：门磁 on = 卷起 */ },
   async model3d(ctx) { return buildRolling(ctx); },
@@ -601,11 +654,12 @@ PluginEngine.register({
 要点：
 
 - `styles[].id` 只用插件内部名字，引擎会加 `'<插件id>:'` 前缀；`ctx.style.id` 拿到的是**去掉前缀**的内部 id
-- **跨插件合并靠 `type`**：门窗的 `type` 是洞口类型（`'door'` / `'window'`），同 `type` 的插件各画各的造型，`model3d` / `plan2d` / `isOn` / `fields` 都取样式所属插件那一份（`PluginEngine.defFor(kind, styleId)`），互不影响；所以各插件的 `fields` 数量可以不同（如 `window` 两个、`window_fixed` 零个），属性面板的实体绑定区随样式切换。设备侧同一套规则（`defFor(type, styleId)`）。漏写 `type` 的 opening 插件注册时会在控制台告警
+- **跨插件合并靠 `type`**：门窗的 `type` 是 `'door'` / `'window'`，同 `type` 的插件各画各的造型，`model3d` / `plan2d` / `click` / `isOn` / `fields` / `labels` 都取样式所属插件那一份（`PluginEngine.defFor(type, styleId)`），互不影响；所以各插件的 `fields` 数量可以不同（如 `window` 两个、`window_fixed` 零个），属性面板的实体绑定区随样式切换。设备侧同一套规则。漏写 `type` 的插件注册时会在控制台告警
 - 选中拆出来的样式时，`obj.style` 存的是带前缀的全名（`'door_rolling:rolling'`）；插件代码里永远只见到内部 id
-- 门窗 `styles` 不需要 `z`（洞口贴地、窗户从 0.9m 起，高度由户型决定）；`icon` 支持内联 SVG 字符串（`v-html` 渲染）
+- 门窗 `styles[].z` **对门无效**（门恒落地）；窗可写 `z` 作为缺省抬升（一般留空，让用户在面板里调 `obj.z`）；`icon` 支持内联 SVG 字符串（`v-html` 渲染）
 - 门窗样式同样支持 `options`（单开门再分左/右开、内/外开…），写法与设备一致，见 2.2.1：3D 里读 `ctx.options`、2D 里读 `p.options`
 - 属性面板的样式区按**聚合后的总数**判断：门窗只要有 2 个以上（含其他插件贡献的）就显示样式按钮
+- 门窗**缺省不显示 3D 标签**：`labels` 不写就是 `false`（注册时定死，见 `PluginEngine.wantsLabel`）；确实想要标签（比如想在门边一直显示「已打开」）就写 `labels: true`
 - **插件文件要包一层 IIFE**：多个 `plugin.js` 是各自独立的 `<script>`，顶层 `const` 共享全局作用域，重名会整文件 SyntaxError（见内置 `door`/`window` 与 `custom/plugins/*` 的写法）
 
 ### 3.2.2 自定义 2D 平面符号 `plan2d(c, p)`
@@ -614,7 +668,7 @@ PluginEngine.register({
 
 ```js
 PluginEngine.register({
-  id: 'door', kind: 'opening', name: '门',
+  id: 'door', kind: 'device', type: 'door', name: '门',
   styles: [{ id: 'single', name: '单开门' }, { id: 'double', name: '双开门' }],
   plan2d(c, p) {
     // 此刻画布已 translate 到洞口中心、rotate 到墙方向，颜色也按选中态给好
@@ -672,13 +726,13 @@ plan2d(c, p) {
 }
 ```
 
-### 3.2.3 2D「开」判定 `isOn(obj, get)`
+### 3.2.3 开 / 合判定 `isOn(obj, get)` 与判定链
 
-门窗的打开逻辑往往不止看一个实体（窗 = 开关实体 + 开度实体），所以门窗插件可以在 register 顶层声明自己的判定函数：
+门窗的打开逻辑往往不止看一个实体（窗 = 开关实体 + 开度实体），所以在 register 顶层声明自己的判定函数：
 
 ```js
 PluginEngine.register({
-  id: 'window', kind: 'opening', name: '窗户',
+  id: 'window', kind: 'device', type: 'window', name: '窗户',
   fields: [
     { key: 'entityId',    label: '开关实体', type: 'entity' },
     { key: 'posEntityId', label: '开度实体', type: 'entity' },
@@ -694,9 +748,14 @@ PluginEngine.register({
 ```
 
 - **绑定了哪些实体 = 插件 `fields` 里声明的 key**（值在 `obj[key]` 上），`isOn` 里按自己的字段自由组合
-- **插件没实现 `isOn` 时用默认规则**：主实体 `on`/`open` 即开，未绑定视为关（与 3D 常闭一致）
+- **返回 `null` / `undefined` = 「我不判定」**，引擎继续往下兜底；返回 `true/false` 就是最终结论
+- **唯一判定入口 `HA.deviceIsOn({entityId, type, style})`**（2D 底色、3D 标签高亮、统计、点击方向全用它）：
+  1. 插件顶层 `isOn(obj, get)` —— 本节这个，设备与门窗共用
+  2. `HA.isOn(eid)` 默认规则 —— 主实体 `on`/`open` 即开，未绑定视为关（与 3D 常闭一致）
+  只有实体 id、没有实例的场景（实体列表、大屏快捷设备）用 `HA.entityIsOn(eid, type)`，它会合成 `{entityId, type}` 再问插件。
+- **不要再用 `click.isOn`**：已删除。判定和「点下去发什么服务」是两件事，混在 click 里会导致 2D/3D/点击方向三套结论
 - 判定结果传给 `plan2d` 的 `p.on` / `p.fill`（开=暖琥珀），插件自己不用再读状态上色
-- 与设备的 `click.isOn(st)` 思路一致：领域知识放插件里；区别是门窗没有点击控制（`click` 属于设备），挂在 register 顶层
+- 门窗**可以**声明 `click`（不像旧版那样只能被动显示）：不写就没有点击控制，写了才响应点击，见 2.3
 
 注意事项：
 
@@ -704,26 +763,28 @@ PluginEngine.register({
 - 每次重绘都会被调用，保持轻量：只画线，别在 `plan2d` 里加载图片或发请求
 - 造型 id 与 `styles[].id` 对应；不在 `styles` 里声明过的样式不会走到这里
 - `styles[].plugin` 指向别的插件时，用的是**那个插件**的 `plan2d`（样式提供者决定符号）
-- 内置 `door`（单开/双开/卷帘）与 `window`（推拉/对开/固定）都实现了 `plan2d`，可直接参考
+- 内置 `door`（单开/双开）、`window`（推拉/对开）与自定义 `door_rolling`（卷帘）、`window_fixed`（固定窗）都实现了 `plan2d`，可直接参考
 
 ### 3.3 坐标系
 
-`group` 原点 = **洞口地面中心**：
+`group` 原点 = **洞口地面中心**（门）或**洞口地面中心 + `obj.z`**（窗，`z` 由属性面板「离地高度」给）：
 
 - `+X` 沿洞口宽度方向（左右）
 - `+Y` 向上（门扇高度从 `0` 到 `h`）
 - `+Z` 垂直墙面（朝室内）
 
-所以门框画在 `y = h/2`，门扇挂在 `x = -w/2` 的铰链组上；窗户是窗台以上一段，底部从 `0.9` 起。
+所以门框画在 `y = h/2`，门扇挂在 `x = -w/2` 的铰链组上；窗户是窗台以上一段，**本地坐标固定从 `0.9` 起**（窗台高度写死在模型里），整体抬升由引擎的 `obj.z` 负责——插件不要自己去加 `obj.z`。
+
+> 洞高由引擎写死：门洞 `0 ~ 2.05m`，窗洞 `0.9+z ~ 2.1+z`（超墙高自动钳到墙高）。所以门模型高度取 `2.06` 左右（比洞高一点点，靠门套盖住缝），窗模型就画 `0.9 ~ 2.1` 这一段的窗框+玻璃。
 
 ### 3.4 完整示例：一扇会开的门
 
 ```js
 // custom/plugins/mydoor/plugin.js
 PluginEngine.register({
-  id: 'mydoor',                    // 任意唯一 id；靠 type 归入洞口类型（只有同 id 才覆盖内置）
-  kind: 'opening',
-  type: 'door',                    // ✅ 洞口类型 'door' / 'window'，漏写样式聚合不到面板
+  id: 'mydoor',                    // 任意唯一 id；靠 type 归 'door'（只有同 id 才覆盖内置）
+  kind: 'device',                  // 与设备同一个 kind
+  type: 'door',                    // ✅ 'door' / 'window'，漏写样式聚合不到面板
   name: '我的门',
   fields: [
     { key: 'entityId', label: '门磁实体', domains: ['binary_sensor'] },
@@ -732,7 +793,7 @@ PluginEngine.register({
   model3d(ctx) {
     const T = ctx.THREE;
     const W = ctx.obj.w || 0.9;
-    const H = ctx.wallH || 2.1;
+    const H = 2.06;                    // 门洞高 2.05（引擎写死），门扇略高 1cm 盖住缝
     const g = new T.Group();
 
     // 门框（静态）
@@ -781,10 +842,12 @@ PluginEngine.register({
 
 ### 3.6 门窗常见坑
 
-1. **漏写 `type` 就在面板里看不到**：opening 的 `type` 是洞口类型（`door` / `window`），漏写控制台会 warn、`styles` 聚合不到样式下拉；`id` 随便取，只有与内置同名才覆盖内置插件。
+1. **漏写 `type` 就在面板里看不到**：门窗的 `type` 是 `'door'` / `'window'`（不是实体类型），漏写控制台会 warn、`styles` 聚合不到样式下拉；`id` 随便取，只有与内置同名才覆盖内置插件。
 2. **必须按 `obj.w` 自适应**：同一个门插件要服务 0.8m 卫生间门和 1.2m 入户门，写死宽度会穿墙。
-3. **不要在 `model3d` 里 `await` 后再读 `ctx.obj` 的旧值**：`obj` 是引用，但场景可能已重建，引擎会丢弃过期实例；重活放 `update()`。
-4. **动画只用一个 `animate`**：门扇和把手如果都要动，合并进同一个 `fn(dt)`。
+3. **高度别自己加 `obj.z`**：`obj.z` 由引擎作用在整组上（窗才有意义，门恒 0），插件本地坐标门画 `0~2.06`、窗画 `0.9~2.1` 即可；自己再加一次会double。
+4. **旋转单位是度（°）**：门/窗与设备的 `obj.rot` 已全链统一存「度」（旧弧度数据由读档迁移自动转换）。插件不用管（引擎统一换算），但自己算朝向时别再乘 `π/180`。
+5. **不要在 `model3d` 里 `await` 后再读 `ctx.obj` 的旧值**：`obj` 是引用，但场景可能已重建，引擎会丢弃过期实例；重活放 `update()`。
+6. **动画只用一个 `animate`**：门扇和把手如果都要动，合并进同一个 `fn(dt)`。
 
 ---
 
@@ -1032,18 +1095,19 @@ PluginEngine.register({
 });
 ```
 
-### 6.2 opening（复制即用）
+### 6.2 门 / 窗（复制即用）
 
 ```js
 PluginEngine.register({
-  id: 'mywindow', kind: 'opening', type: 'window', name: '窗',
+  id: 'mywindow', kind: 'device', type: 'window', name: '窗',
   fields: [{ key: 'entityId', label: '窗磁实体', domains: ['binary_sensor'] }],
+  click: { on: 'turn_on', off: 'turn_off', label: '开 / 关' },   // 想支持点击就写，不写即无点击控制
   model3d(ctx) {
-    const W = ctx.obj.w || 1.2, H = 1.2, SILL = 0.9;   // 窗台 0.9m 起，高 1.2m
+    const W = ctx.obj.w || 1.2, H = 1.2, SILL = 0.9;   // 本地坐标：窗台 0.9m 起、高 1.2m（洞高 0.9~2.1）
     const g = new ctx.THREE.Group();
     const glassMat = ctx.lambert('#cfe6f2', { transparent: true, opacity: 0.45 });
     const glass = new ctx.THREE.Mesh(new ctx.THREE.BoxGeometry(W, H, 0.04), glassMat);
-    glass.position.set(0, SILL + H / 2, 0);
+    glass.position.set(0, SILL + H / 2, 0);   // obj.z（离地高度）由引擎加在整组上，这里不要重复加
     g.add(glass);
     return {
       group: g,
@@ -1056,6 +1120,8 @@ PluginEngine.register({
   },
 });
 ```
+
+> 换成 `type: 'door'` 就是门插件：宽度同样读 `ctx.obj.w`，高度固定画 `0 ~ 2.06`（门洞 2.05），门/窗都**缺省不显示 3D 标签**（要显示写 `labels: true`）。
 
 ### 6.3 background（复制即用）
 

@@ -9,8 +9,8 @@
  *              面板/数据里的造型 id 会加 '<插件id>:' 前缀；插件里 ctx.style.id 仍是原始 id
  *       fields 扩展实体 [{ key, label, domains?, placeholder?, tip? }]
  *              绑上后值存 obj[key]，用 ctx.field*(key) 读；未绑定返回 null / ''
- *       click 点击控制 { on, off, isOn(st), label?, defaultOn?, feedback? }
- *              on/off 写服务名或 { domain, service }；isOn(st) 决定「发 on 还是发 off」；
+ *       click 点击控制 { on, off, label?, defaultOn?, feedback? }
+ *              on/off 写服务名或 { domain, service }；「当前算不算开着」由顶层 isOn(obj, get) 判定；
  *              不写 click 时按 type 取内置默认：light/switch/fan/cover = toggle，
  *              water_heater/climate = turn_on + turn_off，其它 type 不可点击；
  *              不写 isOn 时默认「state 既不是 off 也不是 unavailable 就算已开」
@@ -64,8 +64,13 @@ PluginEngine.register({
   click: {
     on: 'start',
     off: 'return_to_base',
-    isOn: (st) => !!st && ['cleaning', 'returning', 'paused'].includes(st.state),
     label: '开始清扫 / 回充',
+  },
+
+  /* 开/合判定（引擎唯一入口）: 清扫/回充/暂停都算「在干活」 */
+  isOn(obj, get) {
+    const st = obj && obj.entityId ? get(obj.entityId) : null;
+    return !!st && ['cleaning', 'returning', 'paused'].includes(st.state);
   },
 
   /* 标签文案: 清扫机状态中文化 + 电量/面积 */

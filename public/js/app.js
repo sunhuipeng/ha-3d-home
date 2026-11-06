@@ -15,7 +15,7 @@ const AppComponent = {
       tool: 'select',
       selection: null,          // {kind, id}
       savedState: '已保存',
-      houseW: 0, houseD: 0,     // 户型长宽（米，全楼层墙并集）——2D 徽标显示 + studio 背景占位盒参考
+      houseW: 0, houseD: 0,     // 本层户型长宽（米）——2D 徽标显示，跟随当前楼层（切层即刷新）
       entVersion: 0,            // HA 实体变化版本号（触发计算属性）
       histVer: 0,               // 历史栈版本号（撤销/重做按钮置灰态的触发器）
       haStatus: { status: 'connecting' },
@@ -193,8 +193,11 @@ const AppComponent = {
     /* 标签抬升高度的造型默认值（styles[].labelOffset，缺省 0.3m） */
     labelOffsetDefault() {
       const it = this.selItem;
-      if (!it || this.selection.kind !== 'device') return 0.3;
-      return window.PluginEngine ? PluginEngine.labelOffset(devTypeOf(it), it.style) : 0.3;
+      const k = this.selection && this.selection.kind;
+      if (!it) return 0.3;
+      if (k !== 'device' && k !== 'door' && k !== 'window') return 0.3;
+      const type = k === 'device' ? devTypeOf(it) : k;
+      return window.PluginEngine ? PluginEngine.labelOffset(type, it.style) : 0.3;
     },
     /* 面板显示值：实例覆盖 obj.labelOffset 优先，没设过就显示造型默认值 */
     labelOffsetVal() {
@@ -236,14 +239,18 @@ const AppComponent = {
         : '绑定实体后由插件按状态驱动模型（如门磁 on=开门动画）';
     },
 
-    /* 点击控制规格（插件声明优先，否则内置默认；null = 不支持点击） */
+    /* 点击控制规格（插件声明优先，否则内置默认；null = 不支持点击）。
+     * 设备与门/窗同一套：门/窗的 type 就是 'door'/'window'（实例数据没有 type 字段，按选中种类传） */
     devClickSpec() {
       const it = this.selItem;
-      if (!it || this.selection.kind !== 'device' || !window.PluginEngine) return null;
-      const type = devTypeOf(it);
-      return PluginEngine.clickSpec(type, it.style);
+      const k = this.selection && this.selection.kind;
+      if (!it || !window.PluginEngine) return null;
+      if (k !== 'device' && k !== 'door' && k !== 'window') return null;
+      return PluginEngine.clickSpec(k === 'device' ? devTypeOf(it) : k, it.style);
     },
-    /* 复选框状态: 设备显式设置优先，未设置时跟随插件的 defaultOn */
+    /* 复选框状态: 实例显式设置优先，未设置时跟随插件的 defaultOn。
+     * 门窗已并入设备、同一规则：插件声明了 click 的门窗默认勾选，
+     * 没声明的没有 spec、默认不勾选（即旧的「门窗默认不可点」效果改由插件声明驱动） */
     devClickOn() {
       const it = this.selItem;
       if (!it) return false;
@@ -254,7 +261,16 @@ const AppComponent = {
     devClickText() {
       const spec = this.devClickSpec;
       if (!spec) return '';
-      return spec.label + '（' + (spec.on === spec.off ? spec.on : spec.on + ' / ' + spec.off) + '）';
+      /* on/off 为插件自定义函数时显示「自定义动作」（服务名拿不到） */
+      const name = (v) => (typeof v === 'function' ? '自定义动作' : v);
+      const a = name(spec.on), b = name(spec.off);
+      return spec.label + '（' + (a === b ? a : a + ' / ' + b) + '）';
+    },
+    /* 「点击动作」下拉选项：全局拉平一张表（不按设备域分流，绝对自由选）；
+     * 实例选中的值存 it.clickSvc = on 服务名，发服务的域由绑定实体前缀决定 */
+    devClickSvcOpts() {
+      if (!window.PluginEngine) return [];
+      return PluginEngine.clickServiceOptions();
     },
 
     /* 展示大屏展示项配置数据 */
@@ -282,10 +298,6 @@ const AppComponent = {
     },
     kindName() {
       return this.selection ? ({ wall: '墙体', door: '门', window: '窗', furniture: '家具', device: '设备' })[this.selection.kind] : '';
-    },
-    wallLen() {
-      const it = this.selItem;
-      return it ? Math.hypot(it.x2 - it.x1, it.y2 - it.y1).toFixed(2) + ' m' : '';
     },
     devState() {
       void this.entVersion;
@@ -326,11 +338,10 @@ const AppComponent = {
         if (q && !(eid.toLowerCase().includes(q) || name.toLowerCase().includes(q) || (s.state || '').toLowerCase().includes(q))) return;
         const unit = HA.unitOf(s);
         /* 状态文案与"已开启"判定都问插件（与 3D 标签同一套规则），不在 UI 里按 type 写分支 */
-        const spec = window.PluginEngine ? PluginEngine.clickSpec(type) : null;
         const txt = window.PluginEngine ? PluginEngine.labelOf(type, s) : '';
         list.push({
           eid, name, type,
-          on: HA.isOnOf(eid, spec),
+          on: HA.entityIsOn(eid, type),
           stateText: txt || (s.state === 'on' ? '已开启' : s.state === 'off' ? '已关闭' : s.state + unit),
         });
       });
@@ -439,7 +450,9 @@ const AppComponent = {
 
       Editor.init(document.getElementById('c2d'));
       Editor.onChange = (light, label) => { this.dirty(label || (light ? 'drag' : 'edit')); };
+      Editor.onViewChange = () => this.viewDirty();   // 平移/缩放也进撤销栈（见 recode.js pushView）
       this.setFloor();
+      if (typeof Recode !== 'undefined') Recode.setBaseView(Editor.viewState());   // 初始快照也记视图
       View3D.init('c3dWrap');
       View3D.frame({ dir: [9, 10, 11], dist: Math.hypot(9, 10, 11), target: [0, 0, 0] });   // 编辑器取景由 app 自己控制（= 原默认视角）
       this.applyBg();   // 恢复项目里保存的背景插件地面（空则默认纯色 + 网格）
@@ -478,9 +491,10 @@ const AppComponent = {
       this.updateHouseSize();
     },
 
-    /* 户型长宽（米，全楼层墙并集）：2D 画布右上角徽标 + 保存时写入项目 JSON */
+    /* 本层户型长宽（米）：2D 画布右上角徽标（跟随当前楼层，切层/改墙即刷新）。
+     * studio 背景占位盒参考的是「各层最大尺寸」（保存时落盘 houseW/houseD），不再看这个徽标 */
     updateHouseSize() {
-      const fp = (typeof houseFootprint === 'function') ? houseFootprint(this.project) : null;
+      const fp = (typeof floorFootprint === 'function') ? floorFootprint(this.cur) : null;
       this.houseW = fp ? Math.round(fp.w * 10) / 10 : 0;
       this.houseD = fp ? Math.round(fp.d * 10) / 10 : 0;
     },
@@ -500,10 +514,16 @@ const AppComponent = {
     },
     dirty(label) {
       // 快照式撤销: 每次数据改动压栈（restoring 期间的 dirty 来自恢复动作本身，不进栈）
-      if (typeof Recode !== 'undefined') Recode.push(this.project, this.floorIdx, label || 'edit');
+      if (typeof Recode !== 'undefined') Recode.push(this.project, this.floorIdx, label || 'edit', Editor.viewState());
       this.histVer++;
       this.updateHouseSize();   // 墙体增删/拖动都会走到这里，长宽徽标实时跟着变
       this._save();
+    },
+    /* 视图改动（平移/缩放）单独压栈: 数据没变 → 不动保存状态、不用重算长宽。
+     * 有了这条，「先平移视图、再改东西」后撤销时才不会把画面拽回平移前的取景 */
+    viewDirty() {
+      if (typeof Recode === 'undefined' || !this.project) return;
+      if (Recode.pushView(this.project, this.floorIdx, Editor.viewState())) this.histVer++;   // 让撤销按钮可用态刷新
     },
     _save() {
       this.savedState = '未保存';
@@ -519,13 +539,13 @@ const AppComponent = {
       const s = Recode.undo();
       if (!s) return;
       this._applySnapshot(s);
-      this.toast('已撤销');
+      this.toast(s.undone === 'view' ? '已撤销视图（平移/缩放）' : '已撤销');
     },
     redo() {
       const s = Recode.redo();
       if (!s) return;
       this._applySnapshot(s);
-      this.toast('已重做');
+      this.toast(s.undone === 'view' ? '已重做视图（平移/缩放）' : '已重做');
     },
     /* 恢复快照 + 全套联动刷新（restoring 抑制期间的 dirty 进栈） */
     _applySnapshot(s) {
@@ -534,7 +554,9 @@ const AppComponent = {
         this.project = s.project;
         this.floorIdx = Math.min(Math.max(0, s.floorIdx), this.project.floors.length - 1);
         Editor.select(null);   // 选中对象可能已不在恢复后的数据里
-        this.setFloor();       // Editor.floor 重指向 + 视野适配 + 2D 参考底图
+        /* 楼层重指向但不重新 fit: 视图直接用快照里存的，撤销/重做时画面不跳 */
+        this.setFloor(false);
+        Editor.setView(s.view);   // 同步缩放标签（setView 内部回调 updateZoomLabel）
         this.applyBg();        // 背景插件地面（settings.background 属于快照）
         this.rebuild3D();      // 3D 模式下重建（2D 模式 no-op，进 3D 时 setMode 会再建）
         this.updateHouseSize(); // 快照里的墙体可能不同，长宽徽标同步
@@ -555,22 +577,32 @@ const AppComponent = {
     },
 
     /* ------- 楼层 ------- */
-    setFloor() { Editor.floor = this.cur; Editor.fit(); this.zoomPct = Math.round(Editor.ppm / 60 * 100); this.syncBg(); },
-    selectFloor(i) {
+    /* fit=false: 只重指向楼层 + 联动刷新，不用重新适配视野（撤销恢复走这条路，避免画面跳动） */
+    setFloor(fit) {
+      Editor.floor = this.cur;
+      if (fit === false) Editor.render(); else Editor.fit();
+      this.zoomPct = Math.round(Editor.ppm / 60 * 100);
+      this.syncBg();
+      this.updateHouseSize();
+    },
+    /* noView=true: 不记录切层这个「视图动作」（新建/删除楼层自己会压一条数据快照，
+     * 再插一条视图快照会让撤销要按两次） */
+    selectFloor(i, noView) {
       this.floorIdx = i;
       Editor.select(null);   // 切层清选中（App 与 Editor 两边由 select 内部同步）
       this.setFloor();
+      if (!noView) this.viewDirty();   // 切层 = fit 重新取景，算一次视图变化（撤销能回到原来那层的取景）
       if (this.mode === '3d') View3D.rebuild(this.project, i);
     },
     addFloor() {
       this.project.floors.push(newFloor((this.project.floors.length + 1) + '层'));
-      this.selectFloor(this.project.floors.length - 1);
+      this.selectFloor(this.project.floors.length - 1, true);
       this.dirty();
     },
     delFloor() {
       if (this.project.floors.length <= 1) return;
       this.project.floors.splice(this.floorIdx, 1);
-      this.selectFloor(0);
+      this.selectFloor(0, true);
       this.dirty();
     },
     setProjectName(v) { this.project.name = v.trim() || '我的家'; this.dirty(); },
@@ -745,6 +777,8 @@ const AppComponent = {
       if (p.fi !== this.floorIdx) this.selectFloor(p.fi);
       Editor.select(p.d.kindName || 'device', p.d.id);
       Editor.fit();
+      this.zoomPct = Math.round(Editor.ppm / 60 * 100);
+      this.viewDirty();   // 定位后取景变了，记一条视图快照（撤销能回到定位前）
     },
     typeIcon(type) { return DEVICE_TYPES[type] ? DEVICE_TYPES[type].icon : '⚙️'; },
     /* 家具图标: 直接引用 catalog.js 的全局 furnIcon（图标数据在 catalog.json 的 icon 字段） */
@@ -776,7 +810,8 @@ const AppComponent = {
     },
     openDisplay() { window.open('/display.html', '_blank'); },
     zoomStep(f) { Editor.setZoom(Editor.ppm * f); this.zoomPct = Math.round(Editor.ppm / 60 * 100); },
-    zoomFit() { Editor.fit(); this.zoomPct = Math.round(Editor.ppm / 60 * 100); },
+    zoomFit() { Editor.fit(); this.zoomPct = Math.round(Editor.ppm / 60 * 100); this.viewDirty(); },
+    zoomCenter() { Editor.center(); this.viewDirty(); },
     updateZoomLabel(pct) { this.zoomPct = pct; },
 
     /* ------- 属性编辑 ------- */
@@ -833,6 +868,21 @@ const AppComponent = {
       it.click = !!v;
       this.commit({ redraw2d: false });   // 标签可点击状态随重建刷新
       this.toast(it.click ? '点击控制已启用' : '点击控制已关闭');
+    },
+    /* 「点击动作」下拉（实例级覆盖，优先级最高）: 选择后整体替换插件 click / 内置默认；
+     * 选回「默认」即清空回到插件/内置链路。选中动作时自动勾选启用（否则点了也不生效） */
+    setDevClickSvc(key) {
+      const it = this.selItem;
+      if (!it) return;
+      if (key) {
+        it.clickSvc = key;
+        if (it.click !== false) it.click = true;
+        this.toast('点击动作已覆盖: ' + key);
+      } else {
+        delete it.clickSvc;
+        this.toast('点击动作已恢复默认（插件 / 内置）');
+      }
+      this.commit({ redraw2d: false });
     },
     /* 切换样式: 存 obj.style（形如 'plugin:style'）；设备首次切换带出该造型的默认离地高度 */
     setSelStyle(s) {
@@ -941,6 +991,9 @@ const AppComponent = {
     setOpenNum(key, value, type) {
       this.applyNum(key, value, { deg: type === 'deg', min: type === 'deg' ? null : 0.05 });
     },
+    /* 窗离地高度: 0 起步（门恒 0 不可调，面板不渲染输入框） */
+    setOpenZ(value) { this.applyNum('z', value, { min: 0 }); },
+    wheelOpenZ(e, step) { this.wheelStep('z', e, step, { min: 0 }); },
     wheelOpen(key, e, step, type) {
       this.wheelStep(key, e, step, { deg: type === 'deg', min: type === 'deg' ? null : 0.05 });
     },

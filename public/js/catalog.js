@@ -235,16 +235,28 @@ function newSettings() {
  * 门窗的 posEntityId、设备上手填的 name…）永远不会被写回服务器。
  * 服务端只做校验、不参与清洗；以后加字段在这里补一行即可。 */
 
-/* 全屋墙包围盒（所有楼层墙体的并集，米）：2D 长宽徽标、保存快照 houseW/houseD、
- * 3D view3d.computeHouse 三处同口径。w = 东西向(X)，d = 南北向(Y)。 */
-function houseFootprint(p) {
+/* 单层墙包围盒（米）：无墙返回 null。w = 东西向(X)，d = 南北向(Y)。
+ * 楼层间户型尺寸可能不一样，2D 长宽徽标 / 3D 背景构图都按「当前层」取。 */
+function floorFootprint(fl) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, has = false;
-  ((p && p.floors) || []).forEach((fl) => ((fl && fl.walls) || []).forEach((w) => {
+  ((fl && fl.walls) || []).forEach((w) => {
     has = true;
     minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2);
     minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2);
-  }));
+  });
   return has ? { minX, maxX, minY, maxY, w: maxX - minX, d: maxY - minY } : null;
+}
+
+/* 各楼层单独尺寸里的最大长宽（米）：studio 背景占位盒参考。
+ * 逐维取所有楼层的最大值（w = 各层最长的东西向、d = 各层最长的南北向），
+ * 保证占位盒能容纳任何一层的户型 —— 比并集更贴近实际（并集会被错位楼层撑大）。 */
+function maxFloorSize(p) {
+  let w = 0, d = 0;
+  ((p && p.floors) || []).forEach((fl) => {
+    const f = floorFootprint(fl);
+    if (f) { w = Math.max(w, f.w); d = Math.max(d, f.d); }
+  });
+  return (w > 0 && d > 0) ? { w, d } : null;
 }
 
 function serializeProject(p) {
@@ -291,6 +303,10 @@ function serializeProject(p) {
     if (S(o.entityId)) r.entityId = S(o.entityId);
     if (S(o.posEntityId)) r.posEntityId = S(o.posEntityId);
     if (S(o.style)) r.style = S(o.style);
+    if (N(o.z) != null) r.z = N(o.z);                                 // 窗离地高度（门恒 0，不参与）
+    if (N(o.labelOffset) != null) r.labelOffset = N(o.labelOffset);   // 实例级标签抬升覆盖
+    if (o.click === true || o.click === false) r.click = o.click;     // 实例级点击控制覆盖
+    if (S(o.clickSvc)) r.clickSvc = S(o.clickSvc);                    // 实例级点击动作（下拉选择，优先级最高）
     const so = optObj(o.styleOpts); if (so) r.styleOpts = so;
     copyFields(r, o);
     return r;
@@ -314,6 +330,7 @@ function serializeProject(p) {
     if (S(d.style)) r.style = S(d.style);
     if (N(d.labelOffset) != null) r.labelOffset = N(d.labelOffset);   // 实例级标签抬升覆盖
     if (d.click === true || d.click === false) r.click = d.click;   // 设备级点击控制覆盖
+    if (S(d.clickSvc)) r.clickSvc = S(d.clickSvc);                  // 实例级点击动作（下拉选择，优先级最高）
     const so = optObj(d.styleOpts); if (so) r.styleOpts = so;
     copyFields(r, d);
     return r;
@@ -345,6 +362,9 @@ function serializeProject(p) {
   const st = p.settings && typeof p.settings === 'object' && !Array.isArray(p.settings) ? p.settings : {};
   const out = {
     name: S(p.name) || '我的家',
+    /* rotUnit = 旋转角存储单位（全链统一「度」: 设备/门窗/家具同一口径）。
+     * 旧版数据门窗 rot 存弧度，fetchProject 读档时按此标记迁移，写档后即带标记 */
+    rotUnit: 'deg',
     floors: p.floors.map(floorOut),
     /* settings = 项目级配置: 背景插件选择/参数 + 全局天气实体 */
     settings: {
@@ -353,12 +373,13 @@ function serializeProject(p) {
       weatherEntity: S(st.weatherEntity),
     },
   };
-  /* 户型长宽（米，全楼层墙并集，保存时从墙体现算保证不失真）：
-   * studio 开发背景插件时按这两个值设置占位盒的长/宽（safeW/safeD） */
-  const fp = houseFootprint(p);
-  if (fp) {
-    out.houseW = Math.round(fp.w * 10) / 10;
-    out.houseD = Math.round(fp.d * 10) / 10;
+  /* 户型长宽（米，各楼层单独尺寸取最大，保存时从墙体现算保证不失真）：
+   * studio 开背景插件时按这两个值设置占位盒的长/宽（safeW/safeD）。
+   * 逐维取最大（而不是全屋并集）：楼层错位布置时并集会比任何一层都大，占位盒虚胖。 */
+  const ms = maxFloorSize(p);
+  if (ms) {
+    out.houseW = Math.round(ms.w * 10) / 10;
+    out.houseD = Math.round(ms.d * 10) / 10;
   }
   /* 贴图（项目级，全楼层共用一张）；src 去掉 ?t= 防缓存时间戳，只存干净路径 */
   if (p.bgImage && S(p.bgImage.src)) {
@@ -383,6 +404,19 @@ async function fetchProject() {
     if (p && p.floors && p.floors.length) {
       if (!p.settings) p.settings = newSettings();
       if (window.PluginEngine && PluginEngine.migrateProjectBg) PluginEngine.migrateProjectBg(p.settings);
+      /* rot 单位迁移: 旧版门窗 rot 存弧度（编辑器沿墙吸附的 atan2 原值）→ 统一为度。
+       * 一次性：迁移完写入 rotUnit:'deg'，下次保存后不再进这个分支 */
+      if (p.rotUnit !== 'deg') {
+        p.floors.forEach((fl) => {
+          if (!fl || typeof fl !== 'object') return;
+          ['doors', 'windows'].forEach((k) => {
+            (Array.isArray(fl[k]) ? fl[k] : []).forEach((o) => {
+              if (o && typeof o.rot === 'number') o.rot = Math.round(o.rot * 180 / Math.PI * 10) / 10;
+            });
+          });
+        });
+        p.rotUnit = 'deg';
+      }
       p.floors.forEach((fl) => {
         if (!fl || typeof fl !== 'object') return;
         if (!fl.display || typeof fl.display !== 'object' || Array.isArray(fl.display)) fl.display = newDisplay();
@@ -403,9 +437,9 @@ function buildDefaultProject() {
   wall(6.2, 4.8, 10, 4.8); wall(6.2, 4.8, 6.2, 2.2);
   wall(6.2, 2.2, 8, 2.2); wall(8, 0, 8, 2.2);
   const door = (x, y, w, rot) => f.doors.push({ id: uid(), x, y, w, rot });
-  door(4.6, 5.6, 0.9, Math.PI / 2); door(6.2, 3.2, 0.85, Math.PI / 2); door(7, 2.2, 0.8, 0); door(2.5, 0, 1.0, 0);
+  door(4.6, 5.6, 0.9, 90); door(6.2, 3.2, 0.85, 90); door(7, 2.2, 0.8, 0); door(2.5, 0, 1.0, 0);
   const win = (x, y, w, rot) => f.windows.push({ id: uid(), x, y, w, rot });
-  win(1.5, 0, 1.8, 0); win(5, 8, 1.6, 0); win(10, 3.4, 1.6, Math.PI / 2); win(0, 2.4, 1.6, Math.PI / 2);
+  win(1.5, 0, 1.8, 0); win(5, 8, 1.6, 0); win(10, 3.4, 1.6, 90); win(0, 2.4, 1.6, 90);
   const F = (mid, x, y, rot) => {
     // mid = 形态 id（如 teatable / wardrobe）；实例只存 mid + 摆放参数，
     // type/尺寸/颜色等由 furnSpec 从目录解析（形态条目缺失时跳过）

@@ -242,14 +242,14 @@ input[type="range"] { flex: 1; accent-color: var(--blue); }
 #zoomBar button:hover { background: var(--bg); }
 #zoomVal { font-size: 11px; color: var(--ink2); min-width: 38px; text-align: center; }
 #statusBar {
-  position: absolute; left: 80px; bottom: 14px; display: flex; gap: 12px; align-items: center;
+  position: absolute; left: 35px; bottom: 14px; display: flex; gap: 12px; align-items: center;
   background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 6px 14px; font-size: 11.5px; color: var(--ink2); z-index: 22;
 }
 #statusBar .saved { color: #16a34a; }
 
 /* 户型长宽徽标（2D 画布右上角）：studio 开背景插件时按此设置占位盒长/宽 */
 #houseBadge {
-  position: absolute; right: 14px; top: 14px;
+  position: absolute; right: 14px; top: 34px;   /* 34px = 让出上边缘刻度尺(22px) + 12px 呼吸 */
   background: #fff; border-radius: 10px; box-shadow: var(--shadow);
   padding: 6px 14px; font-size: 12px; font-weight: 600; color: var(--ink); z-index: 22;
   cursor: default;

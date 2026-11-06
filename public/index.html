@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HA 3D Home · 编辑</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/style.css?v=7">
+<link rel="stylesheet" href="/style.css?v=9">
 <style>
   /* 启动图: 覆盖 JS/CSS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
   #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
@@ -95,11 +95,12 @@
         <button @click="zoomStep(1 / 1.2)">−</button>
         <span id="zoomVal">{{ zoomPct }}%</span>
         <button @click="zoomStep(1.2)">＋</button>
+        <button @click="zoomCenter" title="居中">⌖</button>
         <button @click="zoomFit" title="适应">⤢</button>
       </div>
-      <!-- 户型长宽（米，全楼层墙并集）：studio 开背景插件时按此设置占位盒长/宽 -->
+      <!-- 本层户型长宽（米，跟随当前楼层）：studio 背景占位盒取「各层最大尺寸」，保存时落盘 -->
       <div id="houseBadge" v-show="mode === '2d' && houseW > 0"
-        :title="'studio 背景占位盒 → 长填 ' + houseW + '，宽填 ' + houseD">
+        :title="'本层户型 ' + houseW + ' × ' + houseD + ' 米；studio 背景占位盒参考各层最大尺寸'">
          {{ houseW }} × {{ houseD }}
       </div>
       <div id="statusBar" v-show="mode === '2d'">
@@ -113,7 +114,8 @@
     <aside id="sidePanel" v-if="cur">
 
       <!-- 未选中: 楼层/项目设置 -->
-      <template v-if="!selection">
+      <!-- 未选中 / 选中墙体: 楼层设置（墙没有可编辑属性，选中只做高亮 + Delete 删除） -->
+      <template v-if="!selection || selection.kind === 'wall'">
         <div class="sp-title">楼层设置</div>
         <div class="sp-sec"><h4>项目</h4>
           <div class="sp-row"><label>名称</label><input :value="project.name" @change="setProjectName($event.target.value)"></div>
@@ -142,7 +144,7 @@
         </div>
         <div class="sp-sec"><h4>楼层</h4>
           <div class="sp-row"><label>名称</label><input :value="cur.name" @change="cur.name = $event.target.value"></div>
-          <div class="sp-row"><label>层高 (m)</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @change="cur.height = parseFloat($event.target.value) || 2.8"></div>
+          <div class="sp-row"><label>层高</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @change="cur.height = parseFloat($event.target.value) || 2.8"></div>
           <div class="sp-btns">
             <button class="sp-btn" @click="addFloor">＋ 新楼层</button>
             <button class="sp-btn warn" :disabled="project.floors.length <= 1" @click="delFloor">删除本层</button>
@@ -208,9 +210,9 @@
           </div>
           <div class="sp-sec"><h4>家具</h4>
             <div class="sp-row"><label>旋转(°)</label><input type="number" step="15" :value="deg(selItem.rot)" @input="setFurnNum('rot', $event.target.value, 'deg')" @wheel.prevent="wheelFurn('rot', $event, 15)"></div>
-            <div class="sp-row"><label>X (m)</label><input type="number" step="0.1" :value="selItem.x" @input="setFurnNum('x', $event.target.value)" @wheel.prevent="wheelFurn('x', $event, 0.1)"></div>
-            <div class="sp-row"><label>Y (m)</label><input type="number" step="0.1" :value="selItem.y" @input="setFurnNum('y', $event.target.value)" @wheel.prevent="wheelFurn('y', $event, 0.1)"></div>
-            <div class="sp-row"><label>离地高度 (m)</label><input type="number" step="0.05" min="0" :value="selItem.z != null ? selItem.z : ''" placeholder="0" @input="setFurnNum('z', $event.target.value)" @wheel.prevent="wheelFurn('z', $event, 0.05)"></div>
+            <div class="sp-row"><label>X</label><input type="number" step="0.1" :value="selItem.x" @input="setFurnNum('x', $event.target.value)" @wheel.prevent="wheelFurn('x', $event, 0.1)"></div>
+            <div class="sp-row"><label>Y</label><input type="number" step="0.1" :value="selItem.y" @input="setFurnNum('y', $event.target.value)" @wheel.prevent="wheelFurn('y', $event, 0.1)"></div>
+            <div class="sp-row"><label>离地高度</label><input type="number" step="0.05" min="0" :value="selItem.z != null ? selItem.z : ''" placeholder="0" @input="setFurnNum('z', $event.target.value)" @wheel.prevent="wheelFurn('z', $event, 0.05)"></div>
             <div class="sp-row"><label>整体比例</label>
               <input type="range" min="20" max="300" step="5" :value="selItem.pct || 100" @input="setFurnNum('pct', $event.target.value)">
               <input class="num-s" type="number" min="20" max="300" step="5" :value="selItem.pct || 100" @input="setFurnNum('pct', $event.target.value)" @wheel.prevent="wheelFurn('pct', $event, 5)">
@@ -247,26 +249,52 @@
               <span class="bm" :title="selItem.model || devStyleName || '默认造型'">模型 {{ selItem.model || devStyleName || '默认造型' }}</span>
             </div>
           </div>
-          <div class="sp-sec" v-if="devClickSpec"><h4>点击控制</h4>
+          <div class="sp-sec"><h4>点击控制</h4>
             <label class="sp-check">
               <input type="checkbox" :checked="devClickOn" @change="setDevClick($event.target.checked)">
-              <span>点击模型 / 标题标签执行：{{ devClickText }}</span>
+              <span>点击模型 / 标题标签执行<span v-if="devClickText">：{{ devClickText }}</span></span>
             </label>
-            <div class="sp-tip">默认行为由插件注册参数声明（未声明时按设备类型默认）；勾选后点击 3D 设备即发送对应服务，取消勾选则不响应点击</div>
-          </div>
-        </template>
-
-        <template v-else-if="selection.kind === 'wall'">
-          <div class="sp-sec"><h4>墙体</h4>
-            <div class="sp-row"><label>长度</label><input disabled :value="wallLen"></div>
-            <div class="sp-row"><label>厚度(m)</label><input type="number" step="0.02" min="0.08" max="0.6" :value="selItem.t || 0.24" @change="setProp('t', $event.target.value)"></div>
+            <div class="sp-row"><label>点击动作</label>
+              <select :value="selItem.clickSvc || ''" @change="setDevClickSvc($event.target.value)">
+                <option value="">插件内置点击事件</option>
+                <option v-for="o in devClickSvcOpts" :key="o.on" :value="o.on">{{ o.label }}（{{ o.on === o.off ? o.on : o.on + ' / ' + o.off }}）</option>
+              </select>
+            </div>
+            <div class="sp-tip">第一项走插件声明的 click（未声明时按内置默认）；其余为 HA 标准服务动作，选择后覆盖插件内置、优先级最高。勾选后点击 3D 设备即发送对应服务，取消勾选则不响应点击</div>
           </div>
         </template>
 
         <template v-else-if="selection.kind === 'door' || selection.kind === 'window'">
           <div class="sp-sec"><h4>{{ kindName }}</h4>
-            <div class="sp-row"><label>宽度(m)</label><input type="number" step="0.05" :value="selItem.w" @input="setOpenNum('w', $event.target.value)" @wheel.prevent="wheelOpen('w', $event, 0.05)"></div>
-            <div class="sp-row"><label>角度(°)</label><input type="number" step="15" :value="deg(selItem.rot)" @input="setOpenNum('rot', $event.target.value, 'deg')" @wheel.prevent="wheelOpen('rot', $event, 15, 'deg')"></div>
+            <div class="sp-row"><label>宽度</label><input type="number" step="0.05" :value="selItem.w" @input="setOpenNum('w', $event.target.value)" @wheel.prevent="wheelOpen('w', $event, 0.05)"></div>
+            <div class="sp-row"><label>角度(°)</label><input type="number" step="15" :value="selItem.rot || 0" @input="setOpenNum('rot', $event.target.value)" @wheel.prevent="wheelOpen('rot', $event, 15)"></div>
+            <!-- 离地高度：门恒 0 不可调（门贴地），窗可调（模型自带窗台 0.9m，z 是整体抬升） -->
+            <div class="sp-row" v-if="selection.kind === 'window'"><label>离地高度</label>
+              <input type="number" step="0.05" min="0" :value="selItem.z != null ? selItem.z : 0" @input="setOpenZ($event.target.value)" @wheel.prevent="wheelOpenZ($event, 0.05)">
+            </div>
+            <div class="sp-row" v-else><label>离地高度</label><span class="sp-val">固定 0（门贴地，不可调）</span></div>
+            <div class="sp-row"><label>标签高度</label>
+              <input type="range" min="0" max="5" step="0.05" :value="labelOffsetVal"
+                @input="setDevLabelOffset($event.target.value)">
+              <input class="num-s" type="number" min="-1" max="6" step="0.05" :value="labelOffsetVal"
+                @input="setDevLabelOffset($event.target.value)" @change="commitDevLabelOffset($event.target.value)"
+                @wheel.prevent="wheelDevLabelOffset($event, 0.05)">
+            </div>
+            <div class="sp-tip">标签高度 = 状态标签相对门/窗模型中部的抬升量（清空回到缺省：门 1.05m / 窗 1.45m）</div>
+          </div>
+          <div class="sp-sec"><h4>点击控制</h4>
+            <label class="sp-check">
+              <input type="checkbox" :checked="devClickOn" @change="setDevClick($event.target.checked)">
+              <span v-if="devClickSpec || selItem.clickSvc">点击模型 / 标题标签执行<span v-if="devClickText && !selItem.clickSvc">：{{ devClickText }}</span><span v-else>：{{ selItem.clickSvc }}</span></span>
+              <span v-else>点击模型 / 标题标签执行（默认不可点，勾选或选择动作后生效）</span>
+            </label>
+            <div class="sp-row"><label>点击动作</label>
+              <select :value="selItem.clickSvc || ''" @change="setDevClickSvc($event.target.value)">
+                <option value="">插件内置点击事件</option>
+                <option v-for="o in devClickSvcOpts" :key="o.on" :value="o.on">{{ o.label }}（{{ o.on === o.off ? o.on : o.on + ' / ' + o.off }}）</option>
+              </select>
+            </div>
+            <div class="sp-tip">门窗与设备同一规则：插件声明了 click（如卷帘门 open_cover/close_cover）默认勾选启用，没声明则默认不勾选。第一项走插件 click，其余为 HA 标准动作、选择后覆盖插件内置且优先级最高；未绑定实体的门窗点击不发送服务</div>
           </div>
         </template>
 
@@ -302,7 +330,7 @@
         <button class="sp-btn" @click="toggleBg">{{ bgInfo.hidden ? '👁 显示贴图' : '🙈 隐藏贴图' }}</button>
         <button class="sp-btn warn" @click="clearBg">🗑 删除贴图</button>
       </template>
-      <div class="sp-tip" style="margin:2px 2px 0">上传户型图作为 2D 画布底图辅助描墙（默认置于原点、宽 10m、半透明）。全楼层共用一张：服务器只存 data/refimg.* 一张图（重复上传自动覆盖），随项目持久化；画完户型图可删。</div>
+      <div class="sp-tip" style="margin:2px 2px 0">上传户型图作为 2D 画布底图辅助描墙（默认置于原点、宽 10、半透明）。全楼层共用一张：服务器只存 data/refimg.* 一张图（重复上传自动覆盖），随项目持久化；画完户型图可删。</div>
     </div>
   </div>
   <input type="file" ref="bgFile" accept="image/*" style="display:none" @change="onBgFile">
@@ -334,7 +362,7 @@
         <i class="fz" v-if="f.custom">自定义</i>
         <span v-html="furnIcon(f)"></span>
         <span class="fn">{{ f.name }}</span>
-        <span class="fs">{{ f.w }} × {{ f.d }} m{{ f.auto ? ' · 自动发现' : '' }}</span>
+        <span class="fs">{{ f.w }} × {{ f.d }} {{ f.auto ? ' · 自动发现' : '' }}</span>
       </button>
     </div>
   </div>
@@ -509,13 +537,13 @@
 <script src="/vendor/OrbitControls.js"></script>
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
-<script src="/js/ha.js?v=1"></script>
-<script src="/js/catalog.js?v=3"></script>
+<script src="/js/ha.js?v=5"></script>
+<script src="/js/catalog.js?v=7"></script>
 <script src="/js/hud.js?v=1"></script>
-<script src="/js/editor.js?v=1"></script>
-<script src="/js/recode.js?v=1"></script>
-<script src="/js/plugins.js?v=11"></script>
-<script src="/js/view3d.js?v=3"></script>
-<script src="/js/app.js?v=6"></script>
+<script src="/js/editor.js?v=12"></script>
+<script src="/js/recode.js?v=3"></script>
+<script src="/js/plugins.js?v=20"></script>
+<script src="/js/view3d.js?v=15"></script>
+<script src="/js/app.js?v=19"></script>
 </body>
 </html>

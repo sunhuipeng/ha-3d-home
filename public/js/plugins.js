@@ -21,10 +21,11 @@
  *   发现并加载插件、聚合造型、按实例创建 3D 对象、把状态变化分发下去、驱动逐帧动画、
  *   插件缺失/失败时放占位。**引擎里没有任何具体造型知识**（外形、图标、2D 符号全在插件）。
  *
- *   三类插件的注册面（逐字段手册见 assets/plugins/door/plugin.js 头部注释）：
- *     kind:'device'      model3d(ctx) → { group, update?, dispose? }
- *                        可选 click（点击控制）/ stateText（标签文案）/ plan2d（2D 符号）
- *     kind:'opening'     model3d(ctx) 同上，可选 plan2d / isOn（没有 click）
+ *   两类插件的注册面（逐字段手册见 assets/plugins/door/plugin.js 头部注释）：
+ *     模型插件（设备 + 门/窗）  model3d(ctx) → { group, update?, dispose? }
+ *                        可选 click（点击控制）/ stateText（标签文案）/ plan2d（2D 符号）/
+ *                        isOn（顶层「开」判定，**唯一的判定入口**，可组合多实体）
+ *                        门/窗只是 type:'door' / 'window' 的贴墙模型插件，能力与设备完全同构
  *     kind:'background'  不写 model3d，styles[] 每项 apply(ctx) → { group, update?, refresh? }
  *
  *   加载与缓存: 服务端 /api/plugins 扫清单 → loadAll() 用 <script> 逐个加载，
@@ -33,15 +34,15 @@
  *
  * 插件注册示例:
  *   PluginEngine.register({
- *     id: 'door', kind: 'opening', type: 'door', name: '门',
+ *     id: 'door', type: 'door', name: '门',
  *     fields: [{ key: 'entityId', label: '门磁实体' }],
  *     async model3d(ctx) { ...; return { group, update(), dispose() }; }
  *   });
  *   id  = 插件标识（同 id 覆盖内置）
  *   builtin = 内置插件标记（assets/plugins 下的插件都要带）；不带 = 自定义，
  *             样式面板据此显示「自定义」角标
- *   kind= 'device' | 'opening' | 'background'
- *   type= 插件归属的类型键：device 填 HA 实体类型（light/switch…），opening 填 door/window；
+ *   kind= 只有 'background' 有意义（背景插件）；模型插件可省略或写 'device'
+ *   type= 插件归属的类型键：HA 实体类型（light/switch…）或贴墙类型 door/window；
  *         同 type 的多个插件 styles 会合并展示（门窗「多插件」就是靠它）
  *
  * —— 本文件分区（按顺序读即可）——
@@ -51,7 +52,7 @@
  *   四、背景插件       bgKit / safeZone / applyBackground / 动态背景刷新
  *   五、点击与文案     clickSpec / labelOf / fieldBits / boundEntities
  *   六、上下文         _makeCtx —— 插件拿到的那一整套能力（THREE/几何/状态/扩展实体/animate）
- *   七、生命周期       _spawn / spawnOpening / spawnDevice / 占位 / updateAll / tick / reset
+ *   七、生命周期       _spawn / spawnDevice（设备与门/窗统一）/ 占位 / updateAll / tick / reset
  */
 'use strict';
 
@@ -85,14 +86,15 @@ const PluginEngine = {
 
   /* ---------------- 注册 ---------------- */
   register(def) {
-    // 设备/门窗插件需要 model3d()；背景插件不需要 model3d，但要声明 styles 数组
-    // （每项实现 apply(ctx) → { group }，扁平/立体/动态都走这一套；三类插件注册参数统一叫 styles）
+    // 模型插件（设备 + 门/窗）需要 model3d()；背景插件不需要 model3d，但要声明 styles 数组
+    // （每项实现 apply(ctx) → { group }，扁平/立体/动态都走这一套；两类插件注册参数统一叫 styles）
     const isBg = def && def.kind === 'background';
     if (!def || !def.id || (!isBg && typeof (def.model3d || def.create) !== 'function')) return;
     if (isBg && !Array.isArray(def.styles)) return;
-    // 门窗靠 type（'door' / 'window'）归入洞口类型 —— 漏写不会报错，但样式聚合不到面板，这里提示一下
-    if (def.kind === 'opening' && !def.type && window.__HA_DBG !== false) {
-      console.warn('[PluginEngine] opening 插件缺 type（应为 door 或 window），styles 不会出现在样式面板:', def.id);
+    // 统一插件类: 门/窗只是 type:'door' / 'window' 的贴墙模型，能力与设备完全同构
+    // （click / stateText / plan2d / isOn / 标签一套不差）。老写法 kind:'opening' 已废除。
+    if (!isBg && !def.type && window.__HA_DBG !== false) {
+      console.warn('[PluginEngine] 插件缺 type（HA 域或 door/window），styles 不会出现在样式面板:', def.id);
     }
     // 资源基准目录: 插件自带模型按 <base>models/xxx 引用；默认跟随 plugin.js 实际所在目录
     // （内置 /assets/plugins/<id>/，用户自定义 /custom/plugins/<dir>/），插件也可显式传 base 覆盖
@@ -103,6 +105,12 @@ const PluginEngine = {
     // 自定义 —— 样式面板 / 同类模型网格据此显示「自定义」角标。不依赖清单 id 与注册 id 的匹配，
     // 自定义代码爱用什么 id 注册都行。
     def.custom = !def.builtin;
+    /* 3D 状态标签开关（注册时定死，实例不可改）:
+     *   - 设备缺省显示（labels 缺省 true）
+     *   - 门/窗（贴墙类型）缺省不显示 —— 门洞上方挂状态牌很怪；插件想要就在 register 里
+     *     显式传 labels:true 开启
+     * 读取走 wantsLabel(type, styleId)（View3D 标签管线唯一入口）。 */
+    def.labels = def.labels != null ? !!def.labels : !(def.type === 'door' || def.type === 'window');
     /* styles[].options 的 type 归一化（bool → checkbox；没写/写错 → text）：
        在这里做一次，样式面板、MCP 描述、预览引擎下游都不必再各自兜底 */
     if (Array.isArray(def.styles)) {
@@ -114,7 +122,8 @@ const PluginEngine = {
       const i = this.defs.indexOf(this.byId[def.id]);
       if (i >= 0) this.defs.splice(i, 1);
     }
-    this._defCache = null;   // 插件集变了，defFor 查询缓存整体失效
+    this._defCache = null;     // 插件集变了，defFor / styleOf 查询缓存整体失效
+    this._styleCache = null;
     this.byId[def.id] = def;
     this.defs.push(def);
   },
@@ -150,12 +159,12 @@ const PluginEngine = {
   get ready() { return this._ready; },
 
   /* ---------------- 造型/插件查询 ---------------- */
-  /* 某类型的默认插件（typeOrKind 传设备 HA 类型或洞口类型 door/window）:
+  /* 某类型的默认插件（typeOrKind 传设备 HA 类型或贴墙类型 door/window）:
    * 同 id 的插件优先（内置 door/window/light 都是 id 与 type 同名），否则取第一个 type 匹配的 */
   defOf(typeOrKind) {
     const same = this.byId[typeOrKind];
-    if (same && (same.kind === 'device' || same.kind === 'opening')) return same;
-    return this.defs.find((d) => (d.kind === 'device' || d.kind === 'opening') && d.type === typeOrKind) || null;
+    if (same && same.kind !== 'background') return same;
+    return this.defs.find((d) => d.kind !== 'background' && d.type === typeOrKind) || null;
   },
 
   /* 某个实例最终用哪个插件：样式条目自带 plugin（样式所属插件，如 mylamp 的造型），
@@ -196,16 +205,12 @@ const PluginEngine = {
   /* 某设备类型的全部插件造型（供 catalog.js 聚合到右侧样式面板）
    * 聚合 id 加插件前缀 '<插件id>:<造型id>'：多个插件（如 light / light_strip）都可能定义
    * id='strip' 的造型，前缀保证唯一；sid 保留插件内部原始 id，传给 model3d(ctx) 用
-   * 参数 type 是「插件归属的类型键」：设备传 HA 实体类型（obj.type），门窗传 kind（door/window） */
+   * 参数 type 是「插件归属的类型键」：HA 实体类型（obj.type）或贴墙类型 door/window */
   styles(type) {
     const out = [];
     this.defs.forEach((def) => {
-      // device 与 opening 都按插件注册的 type 匹配，只是取值含义不同:
-      //   device  → 实体类型（light / switch / fan …）
-      //   opening → 洞口类型（door / window）
-      // 所以一个洞口类型可以由多个插件共同提供造型：内置 door 之外，另建插件写
-      // type:'door' 即可把自己的 styles 聚合进同一个门样式下拉（见 custom/plugins/door_rolling）。
-      const hit = (def.kind === 'device' || def.kind === 'opening') && def.type === type;
+      // 统一插件类: type 直接匹配（HA 域或 door/window），一个 door 类型可由多个插件共同提供造型
+      const hit = def.kind !== 'background' && def.type === type;
       if (!hit) return;
       (def.styles || []).forEach((s) => {
         if (s && s.id) out.push(this.prefixItem(def, s));
@@ -214,10 +219,16 @@ const PluginEngine = {
     return out;
   },
 
-  /* 某个造型定义（d.style 形如 '<插件id>:<造型id>'，缺省取该类型第一个） */
+  /* 某个造型定义（实例的 style 形如 '<插件id>:<造型id>'，缺省取该类型第一个）。
+   * 走 Map 缓存：2D 重绘每设备一次、plan 包装每次创建都会查，styles() 聚合不便宜 */
   styleOf(type, styleId) {
+    if (!this._styleCache) this._styleCache = new Map();
+    const k = type + '|' + (styleId || '');
+    if (this._styleCache.has(k)) return this._styleCache.get(k);
     const list = this.styles(type);
-    return (styleId && list.find((s) => s.id === styleId)) || list[0] || null;
+    const v = (styleId && list.find((s) => s.id === styleId)) || list[0] || null;
+    this._styleCache.set(k, v);
+    return v;
   },
 
   /* ---------------- 参数与条目聚合（背景 / 门窗 / 设备三抽象层共用） ---------------- */
@@ -331,52 +342,64 @@ const PluginEngine = {
     },
   },
 
-  /* 标题标签相对设备锚点的抬升高度（造型可声明 labelOffset，缺省 0.3m）。
-   * 设备实例可用 obj.labelOffset 覆盖（属性面板「标签高度」），View3D 取实例值优先 */
+  /* 标题标签相对锚点的抬升高度。优先级: 实例 obj.labelOffset（View3D 处理）
+   * > 造型 styles[].labelOffset > 插件 def.labelOffset 声明 > 引擎缺省 0.3m。
+   * 门/窗插件的模型中部高度（door 1.05 / window 1.45）由各自插件声明 */
   labelOffset(type, styleId) {
     const s = this.styleOf(type, styleId);
-    return s && s.labelOffset != null ? s.labelOffset : 0.3;
+    if (s && s.labelOffset != null) return s.labelOffset;
+    const def = this.defFor(type, styleId);
+    if (def && def.labelOffset != null) return def.labelOffset;
+    return 0.3;
   },
 
-  /* 门/窗的 2D 模型（平面符号）：造型差异（单开/双开/卷帘/推拉/固定…）交给插件自绘，
-   * 编辑器只保留一份通用兜底。插件可选声明 plan2d(c, p)：
-   *   c  CanvasRenderingContext2D，已 translate 到洞口中心、rotate 到墙方向（不要自己再变换）
-   *   p  { L: 屏幕像素宽度, sel: 是否选中, on: 是否打开(插件 isOn 优先，缺省主实体 on/open),
-   *        ink: 默认描边色, fill: 默认填充色(开=暖琥珀/关=白，填进封闭形状内部),
-   *        ppm: 像素/米, style: 造型内部 id, kind: 'door'|'window',
-   *        entityId: 绑定实体 id, state: 绑定实体状态对象, obj: 放置数据(含拓展实体字段),
-   *        getState: (entityId) => 状态对象|null —— 查任意/拓展实体状态,
-   *        rrect(x,y,w,h,rad) / draw(fn): 圆角矩形路径、建路径后统一填色+描边（见 planKit） }
-   * 返回 (c, p) => void；插件没写 plan2d 时返回 null，编辑器退回通用符号。 */
-  openingPlan(kind, styleId) {
-    const def = this.defFor(kind, styleId);
-    const fn = def && def.plan2d;
-    if (!fn) return null;
-    const style = this.styleOf(kind, styleId);
-    const sid = (style || {}).sid;
-    return (c, p) => {
-      try {
-        /* style: 造型内部 id；options: 造型条目参数合并默认值（p.obj.styleOpts），2D 符号据此画差异 */
-        fn(c, planKit(c, Object.assign({ style: sid, kind, options: this.styleOptionsOf(style, p.obj) }, p)));
-      } catch (e) {
-        console.warn('[plugins] plan2d 绘制失败:', kind, sid, e);
-      }
-    };
+  /* 标签锚点基准高度（3D 标签定位）: 插件 def.labelBaseY 声明（门/窗 = 模型竖直中部，
+   * door 1.05 / window 1.45）；未声明返回 null，调用方回退 devY（设备 = 锚点上方） */
+  labelBaseY(type, styleId) {
+    const def = this.defFor(type, styleId);
+    return def && def.labelBaseY != null ? def.labelBaseY : null;
   },
 
-  /* 门/窗的「开」判定: 插件可选声明 isOn(obj, get)（放在 register 顶层，与 plan2d 同级），
-   * 按自己 fields 绑定的一个或多个实体组合判断是否打开（如窗 = 开关 on 且开度>0）。
+  /* 锚点热球（保底拾取热区）球心高度: 插件 def.hitY 声明（窗 1.4 / 门 1.1），缺省 0 = 锚点处 */
+  hitY(type, styleId) {
+    const def = this.defFor(type, styleId);
+    return def && def.hitY != null ? def.hitY : 0;
+  },
+
+  /* 编辑器放置缺省宽度: 插件 def.defaultW 声明（door 0.9 / window 1.2），未声明返回 null */
+  defaultW(type, styleId) {
+    const def = this.defFor(type, styleId);
+    return def && def.defaultW != null ? def.defaultW : null;
+  },
+
+  /* 该类型实例是否显示 3D 状态标签（register 时的 labels 参数，见 register 归一化）:
+   * 设备缺省开、门/窗缺省关（要显示需插件显式 labels:true）。View3D 标签管线唯一入口。 */
+  wantsLabel(type, styleId) {
+    const def = this.defFor(type, styleId);
+    return def ? !!def.labels : true;
+  },
+
+  /* ---------------- 「开 / 合」判定的唯一入口 ----------------
+   * 插件只能声明一个判定函数: register 顶层的 isOn(obj, get)（与 plan2d 同级）。
    *   obj  放置数据（obj.entityId / fields 里声明的拓展实体 key 都在上面）
-   *   get  (entityId) => 状态对象|null
-   * 返回 boolean|null：插件没实现返回 null → 调用方用默认规则（主实体 on/open）。
-   * 插件实现抛异常时 warn 并回退默认，不会中断渲染。 */
-  openingIsOn(kind, styleId, obj, get) {
-    const def = this.defFor(kind, styleId);
+   *   get  (entityId) => 状态对象|null；不传时默认走 HA.getState
+   * 设备、门、窗共用：
+   *   设备  → isOn(obj,get) { return PluginEngine.runningState(get(obj.entityId)); }
+   *   门窗  → 按 fields 绑定的多个实体组合（窗 = 开关 on 且开度>0 这类）
+   * 返回 boolean|null：插件没实现（或返回 null）→ 调用方继续走默认规则（HA.isOn）。
+   * 插件实现抛异常时 warn 并回退，不会中断渲染。
+   * 调用方: HA.deviceIsOn（有实例）/ HA.entityIsOn（只有实体 id）/ view3d.toggleDevice（点击方向）。
+   * click 只描述「点下去发什么服务」，不再参与判定。 */
+  isOnOf(typeOrKind, styleId, obj, get) {
+    const def = this.defFor(typeOrKind, styleId);
     if (def && typeof def.isOn === 'function') {
+      const read = typeof get === 'function' ? get
+        : (eid) => ((typeof HA !== 'undefined' && HA && HA.getState) ? HA.getState(eid) : null);
       try {
-        return !!def.isOn(obj, get);
+        const r = def.isOn(obj || {}, read);
+        return r == null ? null : !!r;   // 插件返回 null/undefined = 我不判定，继续往下兜底
       } catch (e) {
-        console.warn('[plugins] opening isOn 判定失败:', kind, e);
+        console.warn('[plugins] isOn 判定失败:', typeOrKind, e);
       }
     }
     return null;
@@ -406,23 +429,29 @@ const PluginEngine = {
   /* 设备的 2D 模型（平面简笔）: 与门窗一样交给插件自绘（def.plan2d(c, p)），编辑器只保留兜底。
    * 注意区别: 门窗插件有宽度属性（编辑器传 L = w*ppm，符号沿墙展开），
    * 设备是「点状物」没有宽度，插件按尺寸(米) × p.ppm 画自己的图形。
-   *   c  CanvasRenderingContext2D，已 translate 到设备锚点并按水平旋转 rotate（不要自己再变换）
-   *   p  { sel: 是否选中, on: 是否开启（插件 click.isOn 优先）, hasState: 是否连上实体,
-   *        ppm: 像素/米, type: 设备类型, style: 造型内部 id,
+   *   c  CanvasRenderingContext2D，已 translate 到模型锚点并按水平旋转 rotate（不要自己再变换；
+   *      门/窗则已 translate 到洞口中心、rotate 到墙方向）
+   *   p  { sel: 是否选中, on: 是否开启（统一判定链 HA.deviceIsOn）, hasState: 是否连上实体,
+   *        ppm: 像素/米（设备）/ L: 洞宽像素（门/窗）, type: 设备类型或 door/window,
+   *        style: 造型内部 id, options: 造型条目参数（合并默认值）,
    *        entityId: 绑定实体 id, state: 绑定实体状态对象, obj: 放置数据(含拓展实体字段),
    *        getState: (entityId) => 状态对象|null —— 查任意/拓展实体状态,
    *        fill / ink / accent / accent2 / lw: 抽象层算好的调色板（见 devicePalette）}
    *   插件只画中性线稿：状态色用 p.fill 填进封闭形状内部，选中圈/描边强调由编辑器负责；
    *   不要再铺整圆背景，也不要画随机装饰（每次重绘会闪）。
-   * 返回 (c, p) => 包围半径(像素)；插件没写 plan2d 时返回 null。
-   * styleId 传设备的 obj.style：同 type 多插件时，2D 符号取「当前样式所属插件」那一份 */
+   * 返回 (c, p) => 包围半径(像素)或 void（门/窗符号无包围圈）；插件没写 plan2d 时返回 null。
+   * styleId 传实例的 obj.style：同 type 多插件时，2D 符号取「当前样式所属插件」那一份 */
   devicePlan(type, styleId) {
     const def = this.defFor(type, styleId);
     const fn = def && def.plan2d;
     if (!fn) return null;
+    const style = this.styleOf(type, styleId);
+    const sid = (style || {}).sid;
     return (c, p) => {
-      try { return fn(c, planKit(c, p)); }
-      catch (e) { console.warn('[plugins] 设备 plan2d 绘制失败:', type, e); return null; }
+      try {
+        /* style: 造型内部 id；options: 造型条目参数合并默认值（p.obj.styleOpts），2D 符号据此画差异 */
+        return fn(c, planKit(c, Object.assign({ style: sid, type, options: this.styleOptionsOf(style, p.obj) }, p)));
+      } catch (e) { console.warn('[plugins] plan2d 绘制失败:', type, sid, e); return null; }
     };
   },
 
@@ -693,15 +722,17 @@ const PluginEngine = {
   },
 
   /* ---------------- 点击控制规格 ----------------
-   * 插件可在注册对象里声明 click:
+   * 插件可在注册对象里声明 click（只描述「点下去发什么」，不做开/合判定）:
    *   click: {
    *     on:  'turn_on' | { service: 'media_play', domain: 'media_player' },
    *     off: 'turn_off',
-   *     isOn: (state) => boolean,   // 可选: 判定"当前已开启"，缺省按 state != off/unavailable
    *     label: '播放 / 暂停',        // 可选: 属性面板勾选文案
    *     defaultOn: false            // 可选: 未勾选时是否默认可点击（默认 true）
    *   }
+   * 「当前是不是开着」由插件顶层的 isOn(obj, get) 判定（见 PluginEngine.isOnOf）。
    * 未声明 click 时按 type 取内置默认（灯/开关/风扇/窗帘 toggle，热水器/空调 turn_on/off）。
+   * 门/窗（type:'door'/'window'）同样可声明 click（如车库门卷帘 open_cover/close_cover），
+   * 参数与设备完全同构；贴墙类型没有内置默认 —— 未声明即不可点击。
    * 返回 null 表示该类型不支持点击控制（如纯展示设备）。
    */
   CLICK_DEFAULTS: {
@@ -714,22 +745,61 @@ const PluginEngine = {
   },
 
   /* 点击规格: 插件注册的 click 优先，其次内置默认。
+   * on/off 既可以是服务名字符串，也可以是自定义函数（高级用法，带参数 / 多步 / 条件动作）:
+   *   on(obj, api) — obj 是实例数据，api = { call(dom,svc,data), get(eid), toast(msg), obj }
+   * 方向判定（当前开着发 off、关着发 on）仍由引擎按顶层 isOn 统一驱动，函数只决定「怎么做」。
    * styleId 传设备 obj.style —— 同 type 多插件时按「当前样式所属插件」的 click 声明走 */
   clickSpec(type, styleId) {
     const def = this.defFor(type, styleId);
     const raw = (def && def.click) || this.CLICK_DEFAULTS[type];
     if (!raw) return null;
-    const svc = (v, fb) => (typeof v === 'string' ? v : (v && v.service) || fb);
-    const domainOf = (v) => (v && typeof v === 'object' && v.domain) || (def && def.type) || type;
+    const svc = (v, fb) => (typeof v === 'function' ? v : typeof v === 'string' ? v : (v && v.service) || fb);
+    const declaredDomain = (v) => (v && typeof v === 'object' && v.domain) || '';
+    /* 贴墙类型（door/window）不是 HA 域：domain 不回退 def.type，留给调用方按绑定实体前缀推导；
+     * 插件在 click 里显式声明的 domain 仍然尊重 */
+    const isWall = type === 'door' || type === 'window';
     return {
-      domain: domainOf(raw.on) || domainOf(raw.off),
+      domain: isWall
+        ? (declaredDomain(raw.on) || declaredDomain(raw.off))
+        : (declaredDomain(raw.on) || declaredDomain(raw.off) || (def && def.type) || type),
       on: svc(raw.on, 'toggle'),
       off: svc(raw.off, 'toggle'),
-      isOn: typeof raw.isOn === 'function' ? raw.isOn : null,
       label: raw.label || '开 / 关',
       feedback: raw.feedback === true,   // 无可见状态变化的动作（如刷新读数）执行后弹提示
       defaultOn: raw.defaultOn !== false,
     };
+  },
+
+  /* ---------------- 实例级点击动作（属性面板下拉，优先级最高） ----------------
+   * 全局拉平一张表（不按设备域分流，绝对自由选）：{ on, off, label, feedback }，
+   * on 服务名即选项 key。供两个地方共用:
+   *   1. index.html 属性面板「点击动作」下拉选项（app.js devClickSvcOpts）
+   *   2. view3d.toggleDevice 解析实例 d.clickSvc 为实际服务（clickSvcPair）
+   * 实例选了 clickSvc 后整体替换插件 click / 内置默认；不选（空值）走默认链路。
+   * 发服务的域由绑定实体前缀决定（cover.garage → cover），与选项无关。
+   */
+  CLICK_ACTIONS: [
+    { on: 'turn_on', off: 'turn_off', label: '开 / 关' },
+    { on: 'toggle', off: 'toggle', label: '切换' },
+    { on: 'open_cover', off: 'close_cover', label: '打开 / 关闭' },
+    { on: 'stop_cover', off: 'stop_cover', label: '停止', feedback: true },
+    { on: 'media_play', off: 'media_pause', label: '播放 / 暂停' },
+    { on: 'volume_up', off: 'volume_down', label: '音量 + / −', feedback: true },
+    { on: 'start', off: 'stop', label: '清扫 / 停止' },
+    { on: 'return_to_base', off: 'return_to_base', label: '回充', feedback: true },
+    { on: 'unlock', off: 'lock', label: '开锁 / 上锁' },
+    { on: 'press', off: 'press', label: '按下', feedback: true },
+  ],
+
+  /* 下拉选项列表（全局拉平，绝对自由） */
+  clickServiceOptions() {
+    return this.CLICK_ACTIONS;
+  },
+
+  /* 按实例选择的 key（取 on 服务作标识）解析服务对；找不到返回 null（回落默认） */
+  clickSvcPair(key) {
+    if (!key) return null;
+    return this.CLICK_ACTIONS.find((o) => o.on === key) || null;
   },
 
   /* ---------------- 状态文案 ----------------
@@ -755,7 +825,7 @@ const PluginEngine = {
   },
 
   /* 插件定义的绑定字段（驱动属性面板 UI）
-   * device/opening 通用：fields 里的字段一律渲染成实体搜索框（entity-input），
+   * 通用：fields 里的字段一律渲染成实体搜索框（entity-input），
    * 值存在 obj[field.key] 上，引擎据此监听状态并分发 update（见 boundEntities）。
    * 主实体（obj.entityId）由「设备绑定」单独管理，不要重复声明在 fields 里。 */
   fieldsOf(def) { return (def && def.fields) || []; },
@@ -1002,30 +1072,38 @@ const PluginEngine = {
     return true;
   },
 
-  /* 门窗: obj = door/window 数据，kind = 'door'|'window'。
-   * 造型: obj.style（形如 'door:double' / 'door_rolling:rolling'）→ 该 kind 全部插件 styles 里的一项，
-   *       缺省取第一项；样式条目自带 plugin（它属于哪个插件），所以「一个门由多个插件分别提供造型」时
-   *       各造型各自调自己的 model3d / plan2d / isOn。
-   * 无对应插件（或插件创建失败）时由引擎放薄板占位 —— 调用方（view3d）不关心成败。 */
-  spawnOpening(o, kind, view) {
-    return this._spawnFor(o, kind, view, (g) => {
-      g.position.set(o.x, 0, o.y);
-      g.rotation.y = -(o.rot || 0);
-      view.root.add(g);
-    }, () => this.openingPlaceholder(o, kind, view));
-  },
-
-  /* 设备: 把插件造型画进 view3d 已建好的 body 组（缩放/旋转/热区仍由 view3d 管理）。
-   * 无插件时走引擎的通用占位（含自定义 GLB），view3d 侧不再有任何造型分支。 */
+  /* 模型插件统一建造入口（设备与门/窗同一条路径）:
+   *   d    放置数据（设备 {entityId,type,x,y,...}；门/窗是贴墙设备 {entityId,x,y,w,rot,...}）
+   *   type HA 实体类型（light/switch…）或贴墙类型 door/window —— 全部按 defFor(type) 找插件
+   * body  view3d 建好的造型节点（缩放/水平旋转/贴墙定位由 view3d 负责，插件只管造型本身）
+   * 无对应插件（或插件创建失败）时由引擎放占位 —— 调用方不关心成败。 */
   spawnDevice(d, type, view, body) {
-    return this._spawnFor(d, type, view, (g) => body.add(g), () => this.devicePlaceholder(d, view, body));
+    return this._spawnFor(d, type, view, (g) => body.add(g), () => this.devicePlaceholder(d, view, body, type));
   },
 
-  /* ---------------- 通用占位（无插件 / 插件创建失败时） ----------------
-   * 这是引擎的职责，不属于任何具体 type：不做造型还原，只保证「有东西可点、位置正确」，
-   * 避免设备在场景里凭空消失。设备的真实外形一律以插件为准。 */
-  devicePlaceholder(d, view, body) {
+  /* 通用占位（无插件 / 插件创建失败时）—— 这是引擎的职责，不属于任何具体 type：
+   * 不做造型还原，只保证「有东西可点、位置正确」。插件可用 def.placeholder 声明
+   * 占位薄板 { w, h, color, y }（门/窗贴墙薄板就是这么来的），未声明且是设备时放锚点小立方；
+   * 自定义 GLB 照常加载。 */
+  devicePlaceholder(d, view, body, type) {
     const put = (obj) => { body.add(obj); view.render(); };
+    const def = this.defFor(type, d.style);
+    const ph = def && def.placeholder;
+    if (ph) {   // 插件声明的占位薄板（门/窗贴墙类型；缺省值由插件声明给，引擎不按 type 分支）
+      const L = d.w || ph.w || 0.9;
+      const H = ph.h || 2.0;
+      const panel = new THREE.Mesh(
+        new THREE.BoxGeometry(L, H, 0.04),
+        new THREE.MeshLambertMaterial({
+          color: ph.color != null ? ph.color : 0xd8c9b4,
+          transparent: true,
+          opacity: 0.45,
+        })
+      );
+      panel.position.y = ph.y != null ? ph.y : H / 2;
+      put(panel);
+      return;
+    }
     if (d.model && window.THREE && THREE.GLTFLoader && view.loadModel) {
       view.loadModel(d.model).then((proto) => {
         if (!proto) { put(this._unknownBox()); return; }
@@ -1049,27 +1127,6 @@ const PluginEngine = {
       new THREE.MeshLambertMaterial({ color: 0xdfe4ea, transparent: true, opacity: 0.55 })
     );
     return m;
-  },
-
-  /* 门窗占位：一块半透明薄板（窗在窗台高 0.9m 起，门落地；板厚方向与洞口一致） */
-  openingPlaceholder(o, kind, view) {
-    const L = o.w || (kind === 'door' ? 0.9 : 1.2);
-    const H = kind === 'window' ? 1.2 : 2.0;
-    const grp = new THREE.Group();
-    const panel = new THREE.Mesh(
-      new THREE.BoxGeometry(L, H, 0.04),
-      new THREE.MeshLambertMaterial({
-        color: kind === 'window' ? 0xbfe0f5 : 0xd8c9b4,
-        transparent: true,
-        opacity: 0.45,
-      })
-    );
-    panel.position.y = kind === 'window' ? 1.5 : H / 2;
-    grp.add(panel);
-    grp.position.set(o.x, 0, o.y);
-    grp.rotation.y = -(o.rot || 0);
-    view.root.add(grp);
-    view.render();
   },
 
   /* 实体状态变化 → 回调所有实例的 update() */

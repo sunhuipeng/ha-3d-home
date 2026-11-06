@@ -1,7 +1,7 @@
 {
   "id": "camera",
   "name": "摄像头",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "kind": "device",
   "type": "camera",
   "description": "半球/枪型摄像头，在线（非 unavailable）时录制指示灯亮起，半球机缓慢巡视转动"

@@ -2,5 +2,6 @@ assets/.DS_Store
 data/sticker.png
 backups/
 dist/
+dist-min/
 .DS_Store
 custom/

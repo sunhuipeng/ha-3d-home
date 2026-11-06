@@ -19,8 +19,4 @@ services:
       # 插件远程安装密钥（studio 一键发布用）。设了就以此为准，页面里不能再改：
       # HA3D_INSTALL_KEY: "换成你自己的随机串"
     mem_limit: 128m         # 内存上限（实际占用约 40-60MB）
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8099/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+

@@ -1,5 +1,5 @@
 /*
- * door — 门插件（kind: 'opening'）
+ * door — 门插件（type:'door' 的贴墙设备；与灯/开关等设备同一套插件契约）
  *
  * ============================================================================
  * 这份注释是「插件开发」的权威手册 —— 写新插件时照这份抄。
@@ -21,7 +21,7 @@
  *     version      插件版本号。⚠ 它被拼进加载 URL（plugin.js?v=1.2.3），而服务端对带 ?v= 的
  *                  资源一律「immutable 缓存一年」—— 所以改了 plugin.js 就必须升 version，
  *                  否则浏览器永远拿缓存里的旧文件（只改注释也一样看不到新文件）
- *     kind         'device' | 'opening' | 'background'（与 register 里保持一致，供人工阅读）
+ *     kind         只有 'background' 有意义（背景插件）；模型插件写 'device' 或省略（与 register 一致，供人工阅读）
  *     type         可选，写清类型键，便于阅读（真正生效的是 register 里的 type）
  *     description  可选，一句话说明，出现在插件列表/文档里
  *     entry        可选，自定义入口脚本路径（默认 <目录>/plugin.js，一般不用写）
@@ -33,23 +33,29 @@
  * 一、register({...}) 顶层字段
  * ============================================================================
  *   id        必填，插件 id，建议与目录名一致
- *   kind      必填，'opening'（门窗）| 'device'（设备）| 'background'（房屋外围地面）
- *   type      必填（background 除外），含义随 kind 变：
- *               device  → HA 实体类型：light / switch / fan / cover / climate / sensor /
- *                         camera / media_player / vacuum / water_heater …
- *                         它决定「这个插件能绑哪类实体」，也是样式面板的分组键
- *               opening → 洞口类型：'door' | 'window'
- *                         同 type 的多个插件，styles 会合并进同一个样式下拉
- *                         （本插件 door + custom/plugins/door_rolling 就是例子）
- *                         漏写不报错，但造型聚合不到面板（控制台会 warn）
+ *   kind      模型插件可省略或写 'device'；只有 'background'（房屋外围地面）有特殊含义
+ *   type      必填（background 除外），类型键 —— 门/窗与设备已合并为同一插件类，type 一视同仁：
+ *               HA 实体类型：light / switch / fan / cover / climate / sensor /
+ *               camera / media_player / vacuum / water_heater …
+ *               贴墙类型：'door' | 'window'（由编辑器放到墙上、墙体掏洞，其余能力与设备相同）
+ *               同 type 的多个插件，styles 会合并进同一个样式下拉
+ *               （本插件 door + custom/plugins/door_rolling 就是例子）
+ *               漏写不报错，但造型聚合不到面板（控制台会 warn）
  *   name      必填，显示名（属性面板标题、插件列表用）
- *   styles    造型列表，见第二节。门窗/设备类决定「有哪些外观可选」；背景类必填，每项一个地面
+ *   styles    造型列表，见第二节。决定「有哪些外观可选」；背景类必填，每项一个地面
  *   fields    扩展实体绑定字段，见第三节（可选）
- *   click     点击控制，见第四节（仅 device；opening 没有 click，用顶层 isOn 代替）
+ *   click     点击控制（只描述"点下去发什么"），见第四节（可选；设备有内置默认，门/窗未声明即不可点）
  *   stateText 标题标签文案，见第五节（可选）
  *   plan2d    2D 平面符号，见第六节（可选）
- *   isOn      门窗「开」判定，见第六节（仅 opening，可选）
- *   model3d   3D 模型工厂，见第七节（门窗/设备必填）
+ *   isOn      开/合判定的**唯一入口**（可组合多实体），见第六节（可选；引擎入口 PluginEngine.isOnOf）
+ *   labels    可选，是否显示 3D 状态标签。设备缺省 true；门/窗缺省 false（要显示显式传 true）
+ *   z         可选，锚点离地高度缺省（门/窗贴地声明 0；设备缺省走目录造型 z，再兜底 1.2）
+ *   hitY      可选，锚点热球球心高度（保底拾取热区；窗 1.4 / 门 1.1，缺省 0 = 锚点处）
+ *   labelOffset  可选，标签相对锚点的抬升缺省（door 1.05 / window 1.45，设备缺省 0.3）
+ *   labelBaseY   可选，3D 标签锚点基准高度（门/窗 = 模型中部；不声明则回退锚点高度 devY）
+ *   defaultW     可选，编辑器放置缺省宽度（door 0.9 / window 1.2）
+ *   placeholder  可选，无插件/创建失败时的占位薄板 { w, h, color, y }（y 缺省 h/2）
+ *   model3d   3D 模型工厂，见第七节（模型类必填）
  *   apply     背景工厂，见第八节（仅 background，与 model3d 二选一）
  *   refresh   背景刷新率 Hz，见第八节（仅 background，通常写在 styles 条目上）
  *   base      可选，资源基准目录（默认自动取 plugin.js 所在目录，一般不用写）
@@ -65,9 +71,10 @@
  *     desc: '一扇门，可设手向与开向',    // 可选，按钮下方的说明小字
  *     icon: ico('<path …/>'),         // 可选，按钮图标（24×24 线性 SVG，也可直接给 emoji）
  *                                     //   不写 = 引擎用 ⚙️ 兜底
- *     z: 2.25,                        // device 专用：锚点离地高度（米）
+ *     z: 2.25,                        // 设备专用：锚点离地高度（米）
  *                                     //   缺省时编辑器按 1.2m 兜底
- *                                     //   opening 不写（门窗高度由洞口决定，从地面算起）
+ *                                     //   门不写（恒 0，贴地不可调）；窗可选（在窗台高度基础上
+ *                                     //   整体抬升，缺省 0，属性面板可调）
  *     labelOffset: 1.75,              // 可选：标题标签在锚点之上再抬多少米（缺省 0.3）
  *     model: 'models/x.glb',          // 可选：本造型的默认 GLB（相对插件目录，怎么用由插件定）
  *     options: [ … ]                  // 可选：样式参数 schema，见下
@@ -94,9 +101,9 @@
  *   注意：同造型的不同实例各存各的取值（A 门左开、B 门右开互不影响）。
  *
  * ============================================================================
- * 三、fields[] —— 扩展实体绑定（device / opening 通用，可选）
+ * 三、fields[] —— 扩展实体绑定（通用，可选）
  * ============================================================================
- *   一个设备/门窗除了主实体，常常还挂着别的实体（插座功率、空调湿度、音箱曲目、
+ *   一个模型（设备/门/窗）除了主实体，常常还挂着别的实体（插座功率、空调湿度、音箱曲目、
  *   门磁之外的门开度…）。声明在这里，属性面板就会渲染出「实体绑定」区：
  *     { key: 'posEntityId',        // 必填，数据键名 → 绑定值存 obj[key]
  *       label: '开度实体',          // 必填，界面上的字段名
@@ -104,33 +111,35 @@
  *       placeholder: 'sensor.xxx', // 可选，输入框占位文案
  *       tip: '0~100 表示开度' }     // 可选，字段下方的一行说明
  *   约定：
- *     · device 的主实体走「设备绑定」，不要重复写进 fields
- *       opening 没有那条入口，所以门窗的门磁/开度实体就写在 fields 里
- *       （key 习惯叫 entityId / posEntityId）
+ *     · 设备的主实体走「设备绑定」，不要重复写进 fields
+ *     · 门/窗没有那条入口（一个门洞绑一个主实体），门磁/开度实体就写在 fields 里
+ *       （key 习惯叫 entityId / posEntityId；obj.entityId 是判定链认的主实体键）
  *     · 绑定之后这些实体会被纳入监听：任意一个状态变化都会触发你的 update()
  *     · 读取用 ctx.field / fieldState / fieldOn / fieldNum / fieldText，
  *       未绑定时返回 null / ''，插件不用自己判空
+ *     · 允许出现引擎不认识的附加字段（如 studio 生成的 valueType / enumValues）：
+ *       引擎不读、原样透传，照抄 schema 时保留即可，不要删
  *
  * ============================================================================
- * 四、click —— 点击控制（仅 device，可选）
+ * 四、click —— 点击控制（可选）
  * ============================================================================
  *   click: {
  *     on:  'turn_on',                    // 当前「没开」时发这个服务
  *     off: 'turn_off',                   // 当前「已开」时发这个
  *     // 需要别的域或明确服务名时写成对象：{ domain: 'media_player', service: 'media_play' }
- *     isOn: (st) => st.state === 'on',   // 可选：怎么算「已开」（决定发 on 还是 off）
  *     label: '开 / 关',                   // 可选：属性面板勾选文案（默认 '开 / 关'）
  *     defaultOn: true,                   // 可选：默认是否响应点击（默认 true）
  *     feedback: false,                   // 可选：动作没有可见变化时弹一条提示（如「刷新读数」）
  *   }
  *   规则：
- *     · 不写 click → 按 type 取内置默认：light / switch / fan / cover = toggle；
+ *     · 设备不写 click → 按 type 取内置默认：light / switch / fan / cover = toggle；
  *       water_heater / climate = turn_on + turn_off；其它 type（sensor / vacuum /
  *       camera / speaker …）= 不可点击
- *     · 不写 isOn → 默认「state 既不是 off 也不是 unavailable 就算已开」。
- *       空调这类 cool/heat/idle 多模式值靠这条默认规则，或显式用 runningState(st)
- *     · isOn 只收主实体状态（st），故意不给 obj/get：点击只针对主实体，
- *       避免「点一下」依赖一堆别的实体状态、变得不可预期
+ *     · 门/窗（type:'door'/'window'）没有内置默认 —— 不写 click 即不可点（门磁是只读实体，
+ *       点门没意义；车库门卷帘这类可遥控的才声明，如 open_cover/close_cover）。
+ *       服务域未显式声明时按主实体的域发（cover.garage → cover）
+ *     · click 里**不再有 isOn**：「当前算不算开着」由顶层 isOn(obj, get) 判定（见第六节），
+ *       点击方向、2D 底色、3D 高亮、统计全走同一个函数，不会出现两套结论
  *     · 属性面板「点击控制」的勾选存到 obj.click（true/false），未设置时跟随 defaultOn
  *
  * ============================================================================
@@ -152,20 +161,17 @@
  * ============================================================================
  * 六、plan2d(c, p) / isOn(obj, get) —— 2D 平面图（可选）
  * ============================================================================
- *   plan2d(c, p)：编辑器画平面图里的门窗符号 / 设备简笔。不写就用引擎兜底符号。
- *     c   CanvasRenderingContext2D。画布已 translate 到中心、rotate 到墙方向（门窗）
+ *   plan2d(c, p)：编辑器画平面图里的设备简笔 / 门窗口符号。不写就用引擎兜底符号。
+ *     c   CanvasRenderingContext2D。画布已 translate 到中心、rotate 到墙方向（门/窗）
  *         或设备朝向，只需以原点为中心画线
- *     p   门窗：{ L, sel, on, ppm, ink, fill, style, kind, options,
- *                entityId, state, obj, getState, rrect(), draw() }
- *         设备：{ sel, on, hasState, ppm, type, style, options,
- *                entityId, state, obj, getState, ink, fill, accent, accent2, lw, rrect(), draw() }
- *       ├ L        门窗洞口的屏幕像素宽度（= w × ppm）
- *       │          设备没有 L：做点状图形按「米 × ppm」自己算
+ *     p   { sel, on, hasState, ppm, type, L(仅门/窗), style, options,
+ *           entityId, state, obj, getState, ink, fill, accent, accent2, lw, rrect(), draw() }
+ *       ├ L        门/窗洞口的屏幕像素宽度（= w × ppm）；设备没有 L：点状图形按「米 × ppm」自己算
  *       ├ ppm      像素/米，把真实尺寸换算成屏幕上该多大
  *       ├ sel      是否选中（选中虚线圈由编辑器统一画，插件别自己画）
- *       ├ on       开/关：门窗来自插件 isOn 或主实体；设备来自 click.isOn 或默认规则
+ *       ├ on       开/关：统一判定（顶层 isOn(obj,get) → 默认规则，见 ha.js deviceIsOn）
  *       ├ hasState 设备专用：实体是否连上（没连上时 ink 是红色）
- *       ├ ink      描边主色（门窗：选中蓝 / 窗浅蓝 / 门深灰）
+ *       ├ ink      描边主色（门/窗：选中蓝 / 窗浅蓝 / 门深灰）
  *       ├ fill     状态填充色：开 = 暖琥珀 #fdeecb，关 = 白
  *       │          **只能填在线稿的封闭形状内部**（贴合线框，透明角落不着色）
  *       ├ accent / accent2 / lw   设备专用：活动部件浅灰 / 次级部件中灰 / 线宽 1.6
@@ -175,22 +181,26 @@
  *       ├ getState (id) => 状态对象，需要读扩展实体时用
  *       ├ rrect(x,y,w,h,rad)      只建圆角矩形路径（不填不描），可继续自己 stroke
  *       └ draw(fn, { fill:false } / { stroke:false })  建路径后统一填 p.fill + 描 p.ink
- *     返回：设备返回包围半径（像素，编辑器据此画选中圈）；门窗不需要返回
+ *     返回：设备返回包围半径（像素，编辑器据此画选中圈）；门/窗不需要返回
  *
  *   风格约束（不遵守平面图会显得脏、会闪）：
  *     · 只画中性线稿：颜色只用 p.fill / p.ink / p.accent / p.accent2 / p.lw
  *     · 状态色只填在封闭形状内部；没有封闭形状的（灯带、窗帘）画一条贴合的圆角底条，
  *       不要铺整圆背景
- *     · 不要画随机装饰：平面图每帧重绘，随机值会让符号一直闪
+ *     · 不要画随机装饰：平面图每次重绘（状态 / 选中 / 参数变化都会整图重画）都执行，
+ *       随机值会让符号一直闪
  *
- *   isOn(obj, get)：门窗专用，回答「现在是不是开着」，给 2D 填充色用。
- *     obj  门窗数据；get (entityId) => 状态对象
- *     返回 true / false；不实现（null）→ 回退「主实体 on/open 即开」
+ *   isOn(obj, get)：开/合判定的**唯一入口**（设备 / 门 / 窗通用），给 2D 填充色、
+ *   3D 标签高亮、大屏统计、点击开关方向用。
+ *     obj  实例数据；get (entityId) => 状态对象
+ *     返回 true / false；返回 null / 不实现 → 回退 HA.isOn 默认规则
  *     例：窗 = 开关 on 且开度 > 0；卷帘 = 门磁 on；固定窗恒 false（平面上永远白底）
- *     3D 里用不上它：门扇窗扇的动画由 model3d 自己按开度算（见 openRatioOf）
+ *     设备用它的场景：窗帘 open / 扫地机 cleaning / 音箱 playing 这类非 on/off 状态
+ *     （含多实体组合）；引擎入口 PluginEngine.isOnOf(type, style, obj, get)，
+ *     click 里不再有 isOn。3D 门扇窗扇的动画仍由 model3d 自己按开度算（见 openRatioOf）
  *
  * ============================================================================
- * 七、model3d(ctx) —— 门窗 / 设备的 3D 模型工厂（必填，可 async）
+ * 七、model3d(ctx) —— 模型工厂（设备与门/窗统一，必填，可 async）
  * ============================================================================
  *   返回 { group, update?, dispose? }：
  *     group   必填，要显示的全部内容挂在这个节点下。原点 = 锚点（见下方坐标系）
@@ -200,13 +210,13 @@
  *   引擎会补齐：只返回 { group } 也合法（update 置 null、dispose 补空函数）；
  *   有 update 时引擎在挂上场景后替你调一次初值，插件里不用再写 api.update()。
  *   返回 null / 抛错 / Promise reject 只打日志：其它实例照常跑，本实例走引擎占位
- *   （设备 = 半透明小方块，门窗 = 半透明薄板）。
+ *   （设备 = 半透明小方块，门/窗 = 半透明薄板）。
  *
  *   坐标系（引擎负责摆位，你只管在原点周围搭模型）：
  *     单位统一「米」。
- *     opening：原点 = 洞口地面中心；+X 沿洞口宽度；+Y 向上；+Z 垂直墙面；
- *              引擎把 group 摆到 (obj.x, 0, obj.y) 并按 obj.rot 绕 Y 轴旋转
- *     device ：原点 = 锚点（吸顶灯=天花板面、壁灯=墙面点、落地扇=地面点、扫地机=地面）；
+ *     门/窗（type:'door'/'window'）：原点 = 洞口地面中心；+X 沿洞口宽度；+Y 向上；
+ *              +Z 垂直墙面；引擎把 group 摆到 (obj.x, 0, obj.y) 并按 obj.rot 绕 Y 轴旋转
+ *     其他设备：原点 = 锚点（吸顶灯=天花板面、壁灯=墙面点、落地扇=地面点、扫地机=地面）；
  *              锚点离地高度 = obj.z ?? styles[].z ?? 1.2；
  *              引擎把 group 放进 body 容器，再统一做「整体比例 obj.pct、水平旋转 obj.rot、
  *              抬到锚点高度」
@@ -298,24 +308,27 @@
  * ============================================================================
  * 十、obj —— 实例数据里有什么
  * ============================================================================
- *   门窗（opening）：
+ *   门/窗（type:'door'/'window'，数据在 floors.doors / floors.windows）：
  *     obj.id / x / y / rot   平面位置与朝向（米 / 弧度）。引擎已应用，插件不用管
  *     obj.w                  洞口宽度（米），门默认 0.9、窗默认 1.2 —— 模型按它缩放
  *     obj.style              '<插件id>:<造型id>'，决定用哪个插件 + 哪个造型
  *     obj.styleOpts          样式参数取值，读 ctx.options 即可，不用直接碰它
- *     obj.entityId           主实体（门磁/窗磁）—— 门窗的实体都写在 fields 里
+ *     obj.entityId           主实体（门磁/窗磁）—— 门/窗的实体都写在 fields 里
  *     obj.posEntityId        开度实体（window 插件自己声明在 fields 里的）
+ *     obj.click              可选，「点击控制」的人工覆盖（true / false，需插件声明了 click）
+ *     obj.labelOffset        可选，标签抬升覆盖（插件 labels:true 时才看得到标签）
  *     obj.swing              可选，开门角度（弧度）。新实例可能没有该字段：
  *                            const swing = obj.swing != null ? obj.swing : 1.1
- *   设备（device）：
+ *   设备（floors.devices）：
  *     obj.id / x / y / rot   平面位置、朝向（rot 单位是「度」）
+ *     obj.type               HA 实体类型（light/switch…）—— 判定链/样式面板都按它
  *     obj.z                  可选，锚点离地高度（米）；不写用造型的 z
  *     obj.pct                整体比例（%），默认 100
  *     obj.style / styleOpts  同上
  *     obj.entityId           主实体
  *     obj.click              可选，属性面板「点击控制」的人工覆盖（true / false）
  *     obj.model / obj.scale  可选，自定义 GLB 与尺寸；插件自己决定要不要用
- *   两类通用：fields 里声明的 key 都直接挂在 obj 上。
+ *   通用：fields 里声明的 key 都直接挂在 obj 上。
  *
  * ============================================================================
  * 十一、状态刷新是怎么发生的（不用你订阅）
@@ -344,9 +357,9 @@
  * ============================================================================
  * 十三、最小可跑模板（复制成一个新插件目录即可）
  * ============================================================================
- * // plugin.json: { "id": "mydoor", "name": "我的门", "version": "1.0.0", "kind": "opening" }
+ * // plugin.json: { "id": "mydoor", "name": "我的门", "version": "1.0.0" }
  * PluginEngine.register({
- *   id: 'mydoor', kind: 'opening', type: 'door', name: '我的门',
+ *   id: 'mydoor', type: 'door', name: '我的门',      // type:'door' = 贴墙类型，与设备同一套契约
  *   styles: [{ id: 'plain', name: '平板门' }],                    // 不给 icon 就用 ⚙️
  *   fields: [{ key: 'entityId', label: '门磁实体', domains: ['binary_sensor'] }],
  *   isOn(obj, get) {                                              // 2D 填充色用
@@ -530,9 +543,23 @@ function planDoor(c, p) {
 PluginEngine.register({
   builtin: true,   // 内置插件标记：不带此参数的注册一律视为自定义（「自定义」角标）
   id: 'door',
-  kind: 'opening',
-  type: 'door',        // 洞口类型（门窗用），同 type 的多个插件 styles 会合并
+  type: 'door',        // 贴墙类型：与设备同一套契约（click/isOn/plan2d/标签），编辑器放到墙上并掏洞
   name: '门',
+
+  /* 几何缺省声明（引擎不再按 door/window 硬编码，全部读这里的声明）:
+   *   z           锚点离地高度缺省 0（门贴地）
+   *   hitY        锚点热球球心高度（保底拾取热区）
+   *   labelOffset 标签相对锚点的抬升缺省（≈ 模型中部）
+   *   labelBaseY  3D 标签锚点基准高度（模型竖直中部）
+   *   defaultW    编辑器放置缺省宽度
+   *   placeholder 无插件/创建失败时的占位薄板（宽/高/颜色，y 缺省 h/2） */
+  z: 0,
+  hitY: 1.1,
+  labelOffset: 1.05,
+  labelBaseY: 1.05,
+  defaultW: 0.9,
+  placeholder: { w: 0.9, h: 2.0, color: 0xd8c9b4 },
+
   plan2d: planDoor,
   styles: [
     /* 样式条目可声明 options（同背景插件的参数 schema）:

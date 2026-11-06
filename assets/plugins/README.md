@@ -18,9 +18,9 @@ assets/plugins/<插件id>/
 
 ```js
 PluginEngine.register({
-  id: 'door',                 // 与目录名一致
-  kind: 'opening',            // 'opening'（门窗）| 'device'（设备）| 'background'（背景，只管地面）
-  type: 'light',             // device 必填: 对应 HA 设备类型
+  id: 'mylight',              // 与目录名一致
+  kind: 'device',             // 'device'（设备 / 门 / 窗，靠 type 区分）| 'background'（背景，只管地面）
+  type: 'light',             // 必填: 设备填 HA 设备类型；门/窗填 'door' / 'window'
   name: '门',
   styles: [                   // device 可选: 本插件提供的造型（id 只需在本插件内唯一）
     { id: 'pendant', name: '吊灯', z: 2.25, icon: ico('<line x1="12" y1="3" x2="12" y2="8"/><path d="M7.5 8 h9 l-2 6 h-5 z"/>'), model: 'models/pendant.glb' },
@@ -31,12 +31,27 @@ PluginEngine.register({
     //           plan2d 里读 p.options；写法见 PLUGIN-DEV.md 2.2.1
     { id: 'floor', name: '落地灯', z: 0, labelOffset: 1.75, icon: ico('<path d="M9.5 4 h5 l1.5 5.5 h-8 z"/><line x1="12" y1="9.5" x2="12" y2="19"/>') },
   ],
-  fields: [                   // 扩展实体绑定（可选，device / opening 都支持）
+  fields: [                   // 扩展实体绑定（可选，设备与门/窗都支持）
     // device 的主实体由「设备绑定」管理，不要写进 fields；这里只放扩展实体
     { key: 'powerEntity', label: '功率', domains: ['sensor'], tip: '显示在标签/屏幕' },
   ],
   click: { on: 'toggle', off: 'toggle', label: '开 / 关' },   // 点击控制（可选，见下）
   stateText(st, obj, get) { return ''; },                       // 标签文案（可选，见下）
+  plan2d(c, p) {                                                // 2D 平面符号自绘（可选，写法见 PLUGIN-DEV.md 2.8）
+    // 只画中性线稿：尺寸用「米 × p.ppm」换算，颜色只用 p.fill / p.ink / p.accent / p.accent2
+    // p.draw(() => ...) 一步填色+描边（开=暖琥珀 / 关=白）；最后 return 包围半径(px)
+    // 选中虚线圈、未连接红描边由编辑器负责，别铺整圆背景；不写 plan2d 也有中性符号兜底
+    if (p.style === 'pendant') {                // 按 styles[].id 分支：2D 符号跟造型走
+      const r = 0.18 * p.ppm;                   // 吊灯：俯视一个圆灯罩
+      p.draw(() => c.arc(0, 0, r, 0, Math.PI * 2));
+      return r;
+    }
+    const r = 0.14 * p.ppm;                     // 落地灯：底座圆 + 立杆 + 顶部灯罩条
+    p.draw(() => c.arc(0, 0, r, 0, Math.PI * 2));
+    p.draw(() => { c.moveTo(0, -r); c.lineTo(0, -2.4 * r); }, { fill: false });   // 立杆：只描边
+    p.draw(() => p.rrect(-1.2 * r, -2.9 * r, 2.4 * r, 0.5 * r, 0.2 * r));         // 灯罩
+    return 2.4 * r;
+  },
   async model3d(ctx) {
     // ctx: THREE / obj(门窗或设备数据，含扩展实体字段) / wallH / style(当前造型)
     //      glb(file) 加载本插件 models/*.glb（缓存）
@@ -53,6 +68,50 @@ PluginEngine.register({
       dispose() { ... },      // 场景重建时被引擎回调
     };
   },
+});
+```
+
+> 上面是**设备 / 门 / 窗**（都是 `kind: 'device'`）的写法：靠 `model3d(ctx)` 画 3D。
+> 下面是**背景类**（`kind: 'background'`）的写法：没有 `model3d`，每个 `styles[]` 条目自带 `apply(ctx)` 返回 3D 模型。
+
+### 背景插件示例
+
+```js
+PluginEngine.register({
+  id: 'myground',             // 与目录名一致
+  kind: 'background',
+  name: '我的地面',
+  builtin: true,              // 内置资产标记（custom/ 下的自定义插件不带这行）
+  // ⚠️ 背景类插件的 type 字段无效：引擎不按 type 分组/查找背景（背景只有「地面」一个
+  //    归属，靠 插件id + styles[].id 定位），写了也会被忽略——不用写。
+  //    （studio 生成的背景插件代码里固定填 type:'bg'，仅作占位，同样不参与任何逻辑）
+  styles: [                   // 背景类每项 = 面板里的一个背景选项，自带 apply
+    {
+      id: 'grass',            // 面板聚合后数据里是 'myground:grass'；插件内拿不到也不需要前缀
+      name: '草地',
+      icon: '🌿',             // 按钮图标（emoji 或短文本），不写 = 🖼
+      refresh: 0,             // 0 / 不写 = 静态只画一次；1..30 = 每秒回调 update 这么多次（>30 压到 30）
+      options: [              // 参数 schema（写法同设备类，见 PLUGIN-DEV.md 2.2.1）
+        { key: 'repeat', type: 'range', label: '颗粒密度', min: 4, max: 60, step: 1, def: 26 },
+      ],
+      apply(ctx) {
+        // ctx: THREE / size(建议贴图边长, 512) / house(全屋包围盒, 原点=背景中心) /
+        //      safe(安全区, 1.5m/45°) / options(参数值, 默认已合并) / refresh / plane(canvas)
+        const g = new ctx.THREE.Group();
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = ctx.size;
+        // ... 在 cv 上画整图：canvas 中心 ↔ 背景中心，房屋画在 (house.cx, house.cy) 位置，
+        //     立体造型别放进 safe 安全区（房前 1.5m / 45°），避免盖住平面图上的设备/门窗符号
+        g.add(ctx.plane(cv));         // 贴图 → 120m 平面网格（扁平背景只是「比较扁的 3D 模型」）
+        return {
+          group: g,
+          // refresh? 
+          // update(t, api) { ... },   // 动态背景在这里声明 update，频率跟条目的 refresh
+          // size: 120,                // 可选：覆盖默认平面尺寸（米）
+        };
+      },
+    },
+  ],
 });
 ```
 
@@ -125,7 +184,7 @@ fields: [
 | camera | `motionEntity` 移动侦测、`storageEntity` 存储余量 | 检测到移动时模型红灯 3Hz 快闪 + 标签提示 |
 | speaker | `sourceEntity` 音源、`titleEntity` 当前曲目 | 触屏左上显示音源；曲目缺失时用它补 |
 
-门窗（`door` / `window`）沿用同一套机制，`fields` 里放门磁 / 开度实体 —— 那是它们的**主绑定**（opening 没有独立的「设备绑定」输入框）。
+门窗（`door` / `window`）沿用同一套机制，`fields` 里放门磁 / 开度实体 —— 那是它们的**主绑定**（门/窗没有独立的「设备绑定」输入框）。
 
 ## 点击控制（click）
 
@@ -137,19 +196,24 @@ PluginEngine.register({
   click: {
     on:  { domain: 'media_player', service: 'media_play' },   // 当前未开启时发
     off: { domain: 'media_player', service: 'media_pause' },  // 当前已开启时发
-    isOn: (st) => !!(st && st.state === 'playing'),           // 可选: 自定义"已开启"判定
     label: '播放 / 暂停',                                      // 可选: 属性面板勾选文案
     defaultOn: false,                                         // 可选: 默认是否响应点击（缺省 true）
   },
-  ...
+  /* 「当前算不算开着」不写在 click 里，写在 register 顶层（唯一判定入口） */
+  isOn(obj, get) {
+    const st = obj.entityId ? get(obj.entityId) : null;
+    return !!(st && st.state === 'playing');
+  },
 });
 ```
 
 - `on`/`off` 可写字符串（服务名）或 `{ domain, service }`；同一域时可省 domain
-- `isOn` 缺省判定: `state` 既不是 `off` 也不是 `unavailable` 即视为已开启
+- **`click` 里没有 `isOn`**：判定统一由顶层 `isOn(obj, get)` 负责（见下节），点哪个服务由它决定
 - 内置默认（未声明 click 的 type）: 灯/开关/风扇/窗帘 → `toggle`；热水器/空调 → `turn_on` / `turn_off`
 - 没声明 click 且不在内置默认表里的 type（如 `sensor` / `vacuum`）返回 null = 不可点击；
   `camera` 由插件自己声明 turn_on / turn_off（defaultOn:false，默认不响应）
+- **门 / 窗没有内置默认，与设备同一门禁规则**：`door` / `window` 不在默认表里，插件没声明 `click` 就没有规格 → 不可点（默认不勾选）；
+  声明了 `click`（如卷帘门 `{ on:'open_cover', off:'close_cover', domain:'cover' }`）则跟随 `defaultOn` 默认可点，与设备完全一致
 - 设备数据字段 `click: true|false` 强制开/关，未设置则跟随 `defaultOn`
 
 当前各插件的点击行为:
@@ -167,7 +231,39 @@ PluginEngine.register({
 | speaker | media_player | `media_play` / `media_pause`（state=playing 视为播放中） | **不可点**（防误触出声） |
 | camera | camera | `turn_on` / `turn_off`（多数摄像头不支持，默认关闭） | **不可点** |
 
-door / window 属于 `kind: 'opening'`，不参与点击控制。
+door / window 与设备同属 `kind: 'device'`，**没有内置的点击默认值**：插件声明了 `click`（如 `door_rolling` 的 `open_cover` / `close_cover`）就跟设备一样跟随 `defaultOn` 默认可点；没声明就只显示不响应。点击发服务的域按绑定实体前缀推导（cover.garage → cover），插件也可在 click 里显式写 `domain`。
+
+### 重点：开 / 关判定只有一个入口（设备与门/窗同一套）
+
+「这个实例现在算不算开着」只有一个入口：`HA.deviceIsOn({ entityId, type, style })`。2D 平面图底色、3D 标签高亮、统计、点击时发 `on` 还是 `off`，全部走它。它按顺序问：
+
+| 顺序 | 谁 | 参数 | 适合什么 |
+|---|---|---|---|
+| ① | 插件顶层 `isOn(obj, get)` | `obj` = 放置数据（`obj.entityId` + `fields` 里声明的 key）、`get(eid)` = 读任意实体状态 | 非 on/off 状态（窗帘 `position>0`、扫地机 `cleaning`、音箱 `playing`）与**多实体组合**（窗 = 开关实体 + 开度实体） |
+| ② | 默认规则 `HA.isOn(eid)` | — | 主实体 `on`/`open` 即开，未绑定视为关（与 3D 常闭一致） |
+
+- ① 返回 `null` / `undefined` = 「我不判定」，继续走 ②；返回 `true`/`false` 就是结论
+- ① 抛异常 → 控制台 warn 并回退到 ②，不中断渲染（入口 `PluginEngine.isOnOf(type, style, obj, get)`）
+- 只有实体 id、没有实例的场景（实体列表、大屏快捷设备）用 `HA.entityIsOn(eid, type)`，引擎会合成 `{entityId, type}` 再问插件
+- 门/窗的实体全在 `fields` 里，所以「主实体」通常就是 `obj.entityId` 那个门磁/窗磁
+
+```js
+// 设备：看主实体的非 on/off 状态
+isOn(obj, get) {
+  const st = obj.entityId ? get(obj.entityId) : null;
+  return !!(st && st.state === 'playing');
+}
+
+// 门窗：由 fields 绑的多个实体组合
+isOn(obj, get) {
+  const sw  = obj.entityId    ? get(obj.entityId)    : null;
+  const pos = obj.posEntityId ? get(obj.posEntityId) : null;
+  if (sw) return (sw.state === 'on' || sw.state === 'open') && num(pos) > 0;
+  return num(pos) > 0;                              // 只绑开度 → 按开度
+}
+```
+
+一句话总结：**`click` 只回答「点下去发哪个服务」，`isOn` 回答「现在到底算不算开」**——两件事分开写，插件里放领域知识，引擎里不维护 type 映射表。
 
 ## 状态文案（stateText）
 
@@ -194,6 +290,38 @@ stateText(st, obj, get) {
 - `PluginEngine.fieldBits(obj, get, list)`：`list = [[字段key, (state, num) => 文本], ...]`，自动跳过未绑定/无状态/返回空的项，末尾拼成 ` · a · b`
 - 引擎调用入口: `PluginEngine.labelOf(type, state, obj, get?)`；异常会被捕获并回退通用规则
 
+## 读取实体属性（attributes）
+
+HA 里一个设备实体除了 `state` 主值，还携带大量 **`attributes` 属性**——灯的 `brightness` / `rgb_color`、空调的 `temperature` / `current_temperature` / `hvac_action` / `fan_mode` / `swing_mode`、播放器的 `media_title` / `volume_level`……插件完全可以拿它们做出丰富的状态表现。
+
+**怎么读**（状态对象统一是 `{ state, attributes, last_changed }`）：
+
+```js
+// model3d 的 update() 里：读主实体完整状态
+const st = ctx.getState(d.entityId);
+const at = (st && st.attributes) || {};          // 兜底空对象，别直接 st.attributes.xxx
+const num = (v) => ctx.toNum(v);                 // 'unknown' / 'unavailable' / '' → null
+const cur = num(at.current_temperature);         // 当前室温（数值）
+// 标签文案 stateText(st, obj, get) 里同理：st.attributes 直接可读
+```
+
+**现成案例：`assets/plugins/climate/plugin.js`**。它头注释里先声明「属性契约」，`update()` 再按契约逐项读取，一个属性都不浪费：
+
+| 属性 | 驱动的表现 |
+|---|---|
+| `temperature` / `current_temperature` | 机身 Canvas 显示屏画目标温度（大字）+ 室温（小字） |
+| `hvac_action` | 模式 LED 颜色（cooling 蓝 / heating 橙红 / 其余绿）+ 屏幕模式文字 |
+| `fan_mode` | 屏幕右下显示风速 |
+| `swing_mode === 'vertical'` | 出风叶片上下扫风（否则定角微摆） |
+| `current_humidity` | 湿度扩展实体未绑定时的兜底显示 |
+
+**用 studio 开发时的技巧（重点）**：不同品牌/集成的属性名不一样（米家空调和 ESPHome 空调的 attributes 可能就不同），AI 不知道你实体长什么样就会瞎猜字段名。所以在**提示词里把实体的相关属性列举出来**（在 HA 实体详情 → 开发者工具里能看到全部 attributes），让 AI agent 按这份「属性契约」自行实现。例如：
+
+> 我的空调是米家 companion 集成，实体属性有：`hvac_modes` / `min_temp` / `max_temp` / `temperature`（目标温度）/ `current_temperature`（当前室温）/ `fan_mode`（风速）/ `hvac_action`（当前动作 cooling/heating/idle…）/ `swing_mode`（'vertical' 为上下扫风）。
+> 请实现：机身屏幕显示目标温度和室温，LED 按 hvac_action 变色，swing_mode=vertical 时叶片上下扫风。
+
+按契约开发的好处：AI 读哪个属性、缺属性时怎么兜底（如 climate 里湿度优先扩展实体、缺省回 `current_humidity`）都有了明确依据，一次生成的成功率明显更高；换品牌集成时也只需改提示词里的属性清单。
+
 ## 造型命名空间
 
 同一 `type` 可以有多个插件（比如 `light` 和以后的 `light_strip`），每个插件都可能写 `{ id: 'strip' }`。
@@ -213,15 +341,16 @@ stateText(st, obj, get) {
 
 1. `/api/plugins` 发现插件并加载 plugin.js
 2. 聚合插件 styles（`<插件id>:<造型id>`）供右侧样式面板使用（catalog.js 直接读引擎，不再有 catalog.json styles 这一层）
-3. 场景构建时按 kind/style 匹配插件并创建实例；**插件缺失或 model3d 失败时由引擎放通用占位**
-   （`devicePlaceholder` / `openingPlaceholder`，含设备自定义 GLB 的加载与失败兜底）
+3. 场景构建时按 type/style 匹配插件并创建实例；**插件缺失或 model3d 失败时由引擎放通用占位**
+   （统一入口 `devicePlaceholder`，门窗放半透明薄板、设备放 GLB / 小立方体，含自定义 GLB 的加载与失败兜底）
 4. 统一监听实体变化分发 update；驱动每帧动画
-5. 提供 `clickSpec()` / `labelOf()` / `labelOffset()` / `styleOf()` 给 UI 查询
+5. 提供 `clickSpec()` / `isOnOf()` / `labelOf()` / `labelOffset()` / `wantsLabel()` / `styleOf()` 给 UI 查询
 
 > 造型归属：灯的外形与照射方向（`lightKit` 的 dir/angle/strength）、门窗的门扇窗扇与开合、
 > 各类设备机身细节，全部只在插件里实现。`view3d.js` 是纯抽象层——不含任何 type 的造型知识：
-> `buildDevice()` 只调 `PluginEngine.spawnDevice()` 再做通用变换与热区，
-> `build()` 直接调 `PluginEngine.spawnOpening()`；占位逻辑也归引擎（不是 view3d）。
+> `buildDevice()` 只调 `PluginEngine.spawnDevice()` 再做通用变换与热区（**设备、门、窗共用这一个入口**）；
+> 占位逻辑也归引擎（不是 view3d）。墙体掏洞（门洞/窗洞）仍由 `view3d.buildWall()` 按 `floors.doors` /
+> `floors.windows` 的位置算，和插件无关。
 >
 > **图标也归插件**：`styles[].icon` 由插件自己给（SVG 字符串或 emoji），面板直接 `v-html` 渲染；
 > 引擎里没有内置图标映射表，插件不写就只有 ⚙️ 兜底。门窗的 2D 平面符号同理，走插件的 `plan2d(c, p)`。
@@ -293,8 +422,9 @@ PluginEngine.register({
 `canvas(size)` 空白画布 · `speckle(c, colors, n, min, max)` 均匀噪点 ·
 `seed(str)` + `rand(seed)` 确定性随机（配合 `house.hash` 撒草/撒石位置不跳） ·
 `retile(cv, tile, n)` / `fullPlane(tile, n)` 无缝 tile 铺满 2048² 大图 ·
-`flat(ctx, cv, name?)` 扁平背景组装（平面网格 + 整图） · `repeatOpt(def)` 「颗粒密度」参数。
-内置 `background` 与自定义 `garden` 两个插件都在用，参考它们的写法即可。
+`flat(ctx, cv, name?)` 扁平背景组装（平面网格 + 整图） · `repeatOpt(def)` 「颗粒密度」参数 ·
+`offsetOpts(range?)` 背景偏移参数（引擎保留键 offsetX / offsetZ，米，声明后面板出现偏移滑条）。
+内置 `background` 与 `garden` 两个插件都在用，参考它们的写法即可。
 
 **坐标换算（新手最容易翻车的地方）**：2D 平面坐标 `(x, y)` → 3D `(x, z)`，高度方向才是 y 轴；所以 `house.minY / maxY / cy` 说的都是平面 y（即世界 z）。**`house.cx / cy` 是房屋相对背景中心的偏移量**（原点 = 背景中心，偏移由 `offsetX/offsetZ` 决定），所以画布中心对的是背景中心、房屋画在 `(house.cx, house.cy)` 上。
 
@@ -318,7 +448,7 @@ PluginEngine.register({
 | 目录 | 分组名 | 内容 | 覆盖形态 |
 |---|---|---|---|
 | `assets/plugins/background/` | 户外地面 | 草地 / 沙滩 / 石板 / 木栈道 / 雪地 / 水面(动态15Hz) / 草原(自绘) | 平铺 + 动态 + 自绘 |
-| `custom/plugins/garden/` | 庭院铺装 | 鹅卵石 / 青砖 / 白砂枯山水 / 溪水(动态12Hz) / 汀步小径(自绘) | 平铺 + 动态 + 自绘 |
+| `assets/plugins/garden/` | 庭院铺装 | 鹅卵石 / 青砖 / 白砂枯山水 / 溪水(动态12Hz) / 汀步小径(自绘) | 平铺 + 动态 + 自绘 |
 
 复制一份目录 → 改 `plugin.json` 的 `id`（与目录名一致）、`plugin.js` 里 `register({ id })` 与 `name`，
 重启服务即出现在面板里，与已有插件并列。

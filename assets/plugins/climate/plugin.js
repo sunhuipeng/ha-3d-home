@@ -17,8 +17,8 @@
  *              面板/数据里的造型 id 会加 '<插件id>:' 前缀；插件里 ctx.style.id 仍是原始 id
  *       fields 扩展实体 [{ key, label, domains?, placeholder?, tip? }]
  *              绑上后值存 obj[key]，用 ctx.field*(key) 读；未绑定返回 null / ''
- *       click 点击控制 { on, off, isOn(st), label?, defaultOn?, feedback? }
- *              on/off 写服务名或 { domain, service }；isOn(st) 决定「发 on 还是发 off」；
+ *       click 点击控制 { on, off, label?, defaultOn?, feedback? }
+ *              on/off 写服务名或 { domain, service }；「当前算不算开着」由顶层 isOn(obj, get) 判定；
  *              不写 click 时按 type 取内置默认：light/switch/fan/cover = toggle，
  *              water_heater/climate = turn_on + turn_off，其它 type 不可点击；
  *              不写 isOn 时默认「state 既不是 off 也不是 unavailable 就算已开」
@@ -63,14 +63,15 @@ PluginEngine.register({
     { id: 'ac_floor', name: '立式柜机', z: 0, icon: ico('<rect x="7" y="3.5" width="10" height="17" rx="1.5"/><line x1="7" y1="9" x2="17" y2="9" opacity=".5"/><line x1="7" y1="16.5" x2="17" y2="16.5" opacity=".5"/>') },
   ],
 
-  /* 点击: 开机 / 关机（climate 域无 toggle 服务，用 turn_on / turn_off）
-   * state 是 cool/heat/idle 等模式值，非 off 即视为运行中 */
+  /* 点击: 开机 / 关机（climate 域无 toggle 服务，用 turn_on / turn_off） */
   click: {
     on: 'turn_on',
     off: 'turn_off',
-    isOn: (st) => PluginEngine.runningState(st),
     label: '开机 / 关机',
   },
+
+  /* 开/合判定（引擎唯一入口）: state 是 cool/heat/idle 等模式值，非 off 即视为运行中 */
+  isOn(obj, get) { return PluginEngine.runningState(obj && obj.entityId ? get(obj.entityId) : null); },
 
   /* 标签文案: 模式 + 目标温度 */
   stateText(st, obj, get) {

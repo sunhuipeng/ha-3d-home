@@ -1,5 +1,5 @@
 /*
- * window — 窗户插件（推拉窗 / 对开窗，kind: 'opening'）
+ * window — 窗户插件（推拉窗 / 对开窗，type:'window' 的贴墙设备）
  *
  * 坐标系: group 原点 = 窗洞地面投影中心（墙面线上），Y 为绝对高度（窗台 0.9 → 窗顶 2.1）
  * 组合: frame.glb(静态窗框) + 玻璃扇(代码网格, 半透明)，两种造型:
@@ -12,22 +12,24 @@
  * 开度优先级: 开关 off → 必关；开关 on → 开度实体有值用其比例，无则全开(100%)；
  *            只绑开度实体不绑开关 → 直接按开度；两个都没绑 → 常闭
  *
- * —— 参数速查（门窗类插件通用；完整逐项说明见 assets/plugins/door/plugin.js 头部手册）——
- * 注册: id / kind:'opening' / type（洞口类型：'door' 或 'window'）/ name 必填
- *       type 在门窗里的含义是「洞口类型」—— 同 type 的多个插件，styles 会合并进同一个
- *       样式下拉（内置 window + custom/plugins/window_fixed 就是一例）
+ * —— 参数速查（门/窗与设备已是同一套插件契约；完整逐项说明见 assets/plugins/door/plugin.js 头部手册）——
+ * 注册: id / type（'door' 或 'window'）/ name 必填（kind 写 'device' 或省略）
+ *       type:'window' = 贴墙类型 —— 编辑器把模型放到墙上并掏洞，其余能力与设备完全相同；
+ *       同 type 的多个插件，styles 会合并进同一个样式下拉（内置 window + custom/plugins/window_fixed 就是一例）
  *       styles 造型 [{ id, name, desc?, icon?, model?, options?（样式参数 schema）}]
- *              门窗不写 z：高度由洞口决定、从地面算起；造型 id 聚合时加 '<插件id>:' 前缀
+ *              不写 z：高度由洞口决定、离地恒为 0；造型 id 聚合时加 '<插件id>:' 前缀
  *              options 用来表达同一造型的差异（手向左右 / 开向内开外开 / 推拉方向…），
  *              取值 = 条目 def ∪ 实例 obj.styleOpts，3D 里读 ctx.options、2D 里读 p.options
  *       fields 主绑定实体 [{ key, label, domains?, placeholder?, tip? }]
- *              门窗没有「设备绑定」入口，门磁 / 开度等实体都写在这里；
+ *              窗洞没有「设备绑定」入口，窗磁 / 开度等实体都写在这里；
  *              绑定值存 obj[key]，用 ctx.getState(obj[key]) 或 ctx.field*() 读
- *       isOn(obj, get) 可选，「现在是否开着」→ 只影响 2D 平面填充色；
- *              不写则回退「主实体 on/open 即开」。3D 的开合动画由 model3d 自己按开度算
+ *       isOn(obj, get) 可选，顶层「开」判定（可组合多实体）→ 2D 填充色 / 3D 标签高亮 / 统计；
+ *              不写则判定链回退 HA.isOn 默认规则。3D 的开合动画由 model3d 自己按开度算
+ *       click 可选，点击控制（本插件不声明 = 窗不可点；窗磁是只读实体，点窗没意义）
+ *       labels 可选，是否显示 3D 状态标签（门/窗缺省 false，要显示显式传 true）
  *       plan2d(c, p) 可选，2D 平面符号自绘（推拉画中梃、对开画开启弧），不写用通用兜底；
  *              只画中性线稿，开/关底色用 p.fill 填进封闭形状内部，选中圈由编辑器画
- *              p = { L（洞口像素宽度）, sel, on, ppm, ink, fill, style, options, kind,
+ *              p = { L（洞口像素宽度）, sel, on, ppm, type, style, options,
  *                    entityId, state, obj, getState, rrect(x,y,w,h,rad), draw(fn, opts) }
  * model3d(ctx) 必填，可 async，返回 { group, update?, dispose? }
  *       group   根节点（原点 = 洞口地面中心（窗在墙面线上）；+X 沿洞口宽度、+Y 向上、
@@ -188,9 +190,19 @@ function planWindow(c, p) {
 PluginEngine.register({
   builtin: true,   // 内置插件标记：不带此参数的注册一律视为自定义（「自定义」角标）
   id: 'window',
-  kind: 'opening',
-  type: 'window',      // 洞口类型（门窗用），同 type 的多个插件 styles 会合并
+  type: 'window',      // 贴墙类型：与设备同一套契约，编辑器放到墙上并掏洞；同 type 的多个插件 styles 会合并
   name: '窗户',
+
+  /* 几何缺省声明（含义同 door 插件；窗锚点 z 可被实例「离地高度」覆盖）:
+   *   z 0（模型自带窗台 0.9m，z 是整体抬升量）/ hitY 1.4 / labelOffset 1.45 /
+   *   labelBaseY 1.45（模型中部）/ defaultW 1.2 / placeholder 贴墙玻璃薄板 */
+  z: 0,
+  hitY: 1.4,
+  labelOffset: 1.45,
+  labelBaseY: 1.45,
+  defaultW: 1.2,
+  placeholder: { w: 1.2, h: 1.2, color: 0xbfe0f5, y: 1.5 },
+
   plan2d: planWindow,
   styles: [
     { id: 'sliding', name: '推拉窗', desc: '双扇推拉，活动扇沿轨道与固定扇重叠；开度实体控开合比例', icon: ico('<rect x="3" y="7" width="18" height="10" rx="1"/><line x1="12" y1="7" x2="12" y2="17"/><line x1="8" y1="12" x2="11" y2="12" opacity=".55"/>') },
