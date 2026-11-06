@@ -398,16 +398,144 @@ const Editor = {
     return best;
   },
 
+  /* ================== 点击判定（像素拾取层） ==================
+   * 为什么不再用「圆心 + 半径」：2D 符号由插件自绘，形状千差万别（摄像头 0.9m 视场扇、
+   * 壁挂空调 0.85×0.22 长条、窗帘 0.9m 横杆、灯 r=0.13 小圆）。任何解析形状都得跟绘制
+   * 代码维护两份几何，迟早漂移。这里改成「画什么就命中什么」：
+   *   把同一批绘制函数（drawFurniture/drawDoorWindow/drawDevice）用唯一 id 色重画到
+   *   一张离屏画布，点击时读那个像素的颜色 → 直接得到点到了谁。
+   * 好处：任意形状（扇形/圆角/旋转/虚线）自动贴合；重叠按绘制顺序取最上层，与眼睛一致；
+   *      读像素时取 13×13 邻域 = 「轮廓外 6px 也算命中」，热区是屏幕像素、不随缩放变。
+   * 代价：形状/视图变化后多画一遍离屏（脏了才画；hover 只是重读同一张图，不重画）。
+   * 墙不进拾取层：它面积最大、永远在最底下，仍走 hitWall 的胶囊判定兜底。 */
+  PICK_PAD: 6,          // 读像素半径(屏幕 px)：符号外 6px 内也算命中
+  _pick: null,          // { canvas, ctx, map: Map<颜色id, {kind,item}>, sig }
+
+  /* 形状签名: 参与决定「离屏图要不要重画」。元素增删/移动/旋转/缩放/换样式 都会变，
+   * 视图平移缩放也会变（屏幕坐标变了）——变化了才重画，避免每次 mousemove 都全量重绘 */
+  pickSig(W, H) {
+    let h = 2166136261;
+    const m = (v) => { h = Math.imul(h ^ ((v * 64) | 0), 16777619); };
+    m(W); m(H); m(this.ppm); m(this.ox); m(this.oy);
+    /* 插件加载完之前 2D 走兜底符号，加载完形状会变 → 插件表变化必须让离屏图失效 */
+    const PE = window.PluginEngine;
+    m(PE ? PE.defs.length : -1); m(PE && PE.ready ? 1 : 0);
+    const f = this.floor;
+    if (!f) return h;
+    const str = (s) => { let k = s.length; for (let i = 0; i < s.length; i++) k = (k * 33 + s.charCodeAt(i)) | 0; m(k); };
+    const list = (arr, tag) => {
+      m(tag); m(arr.length);
+      for (let i = 0; i < arr.length; i++) {
+        const it = arr[i];
+        m(it.x); m(it.y); m(it.rot || 0); m(it.w || 0); m(it.pct || 100);
+        str(String(it.id || '')); str(String(it.style || ''));
+      }
+    };
+    list(f.windows, 1); list(f.doors, 2); list(f.furniture, 3); list(f.devices, 4);
+    return h;
+  },
+
+  ensurePick() {
+    if (!this.canvas) return null;
+    let p = this._pick;
+    if (!p) {
+      const c = document.createElement('canvas');
+      /* willReadFrequently: 这张画布的用途就是被反复读像素，提前声明避免 GPU 回读抖动 */
+      p = this._pick = {
+        canvas: c, ctx: c.getContext('2d', { willReadFrequently: true }),
+        map: new Map(), sig: 0, cw: 0, ch: 0,
+      };
+    }
+    /* 只在主画布缓冲区尺寸变了才去量 CSS 尺寸（getBoundingClientRect 会触发布局，
+     * hitTest 又在每次 mousemove 上跑，不能每次都量） */
+    if (p.cw !== this.canvas.width || p.ch !== this.canvas.height) {
+      const rect = this.canvas.getBoundingClientRect();
+      p.cw = this.canvas.width; p.ch = this.canvas.height;
+      p.canvas.width = Math.max(1, Math.round(rect.width));
+      p.canvas.height = Math.max(1, Math.round(rect.height));
+      p.sig = 0;   // 改尺寸会清空画布 + 重置 ctx 状态
+    }
+    const sig = this.pickSig(p.canvas.width, p.canvas.height);
+    if (p.sig !== sig) { this.buildPick(p, p.canvas.width, p.canvas.height); p.sig = sig; }
+    return p;
+  },
+
+  /* 用唯一色重画三类元素。色号 = 序号 × 8（r 低 5 位 + g 进位，b 恒 0），
+   * 背景全透明 → 读出来 a 为 0 就是空白。
+   * 为什么 ×8：抗锯齿边缘的半透明像素会被浏览器「预乘 alpha → 读回非预乘」的往返舍入
+   * 污染（rgb(3,0,0) 在 a≈0.3 时读回来可能是 2 或 4）——密排编号会让边缘命中串成
+   * 相邻创建的另一个元素；8 的间隔配合 pickAt 里 ±2 的容差，舍入伤不到编号 */
+  buildPick(p, W, H) {
+    const ctx = p.ctx;
+    p.map.clear();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    if (!this.floor) return;
+    let n = 0;
+    const put = (kind, item, draw) => {
+      n++;
+      const code = n * 8;
+      const col = 'rgb(' + (code & 255) + ',' + ((code >> 8) & 255) + ',0)';
+      p.map.set(n, { kind, item });
+      /* fill/ink = 实体轮廓（参与命中）；accent/accent2 = 装饰（光线、气流、指示灯…）
+       * 传透明 → 装饰既不命中也不遮挡，否则空调下方的"气流弧"会把热区往外撑一圈 */
+      draw(pickCtx(ctx, col), { fill: col, ink: col, accent: 'rgba(0,0,0,0)', accent2: 'rgba(0,0,0,0)', lw: 1 });
+    };
+    /* 顺序 = 绘制顺序（后画的盖先画的）→ 拾取结果天然是「看得见的最上面那个」 */
+    this.floor.windows.forEach((o) => put('window', o, (c, pal) => this.drawDoorWindow(c, o, true, pal)));
+    this.floor.doors.forEach((o) => put('door', o, (c, pal) => this.drawDoorWindow(c, o, false, pal)));
+    this.floor.furniture.forEach((f) => put('furniture', f, (c, pal) => this.drawFurniture(c, f, pal)));
+    this.floor.devices.forEach((d) => put('device', d, (c, pal) => this.drawDevice(c, d, pal)));
+  },
+
+  /* 读一个点（屏幕 CSS 坐标）：取 PICK_PAD 邻域内「离点击点最近」的 id 色。
+   * 取最近而不是取出现次数最多 —— 贴着两个元素的交界点按时，选离得更近的那个 */
+  pickAt(sx, sy) {
+    const p = this.ensurePick();
+    if (!p || !p.map.size) return null;
+    const W = p.canvas.width, H = p.canvas.height;
+    const cx = Math.round(sx), cy = Math.round(sy), r = this.PICK_PAD;
+    const x0 = Math.max(0, cx - r), y0 = Math.max(0, cy - r);
+    const x1 = Math.min(W, cx + r + 1), y1 = Math.min(H, cy + r + 1);
+    if (x1 <= x0 || y1 <= y0) return null;
+    let img;
+    try { img = p.ctx.getImageData(x0, y0, x1 - x0, y1 - y0); } catch (e) { return null; }
+    const d = img.data, w = x1 - x0;
+    let best = null, bestD = Infinity;
+    for (let i = 0, px = 0; i < d.length; i += 4, px++) {
+      if (d[i + 3] !== 255) continue;   // 只认完全不透明：半透明边缘像素被预乘舍入污染，色号不可信
+      const raw = d[i] | (d[i + 1] << 8);          // = 序号 × 8
+      const n = Math.round(raw / 8);
+      if (n < 1 || Math.abs(raw - n * 8) > 2) continue;   // 不在合法格点上（杂色/融合色）→ 忽略
+      const e = p.map.get(n);
+      if (!e) continue;
+      const col = px % w, row = (px - col) / w;
+      const dx = x0 + col - sx, dy = y0 + row - sy;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestD) { bestD = dist; best = e; }
+    }
+    return best ? { kind: best.kind, item: best.item } : null;
+  },
+
   hitTest(wx, wy) {
     if (!this.floor) return null;
-    // 设备优先（点状物）
-    for (let i = this.floor.devices.length - 1; i >= 0; i--) {
-      const d = this.floor.devices[i];
-      if (Math.hypot(wx - d.x, wy - d.y) < 0.3) return { kind: 'device', item: d };
+    const [sx, sy] = this.toScreen(wx, wy);
+    const hit = this.pickAt(sx, sy);
+    if (hit) {
+      /* 家具压在门窗上时仍优先门窗（原有体验）：家具靠墙放常与门窗符号重叠，
+       * 若点在门窗符号本身附近，把它从家具手里夺回来，否则门被沙发盖住就再也点不中 */
+      if (hit.kind === 'furniture') {
+        const o = this.hitOpenings(wx, wy);
+        if (o) return o;
+      }
+      return hit;
     }
-    // 门窗先于家具: 门窗是墙上的细长符号，家具包围盒常盖到墙上 —— 家具先判会把
-    // 点在窗户/门上的点击整个抢走（表现为「很难点中窗户」）。
-    // 判定用「到洞口线段的距离」而不是中心点圆：细长符号两端也能点中，也不误抢两侧
+    const hw = this.hitWall(wx, wy);
+    return hw ? { kind: 'wall', item: hw.wall } : null;
+  },
+
+  /* 门窗的解析复判（只在「家具已经命中」时用）：先门后窗，顺序与绘制优先级一致 */
+  hitOpenings(wx, wy) {
     for (let i = this.floor.doors.length - 1; i >= 0; i--) {
       const o = this.floor.doors[i];
       if (this.hitOpening(o, wx, wy)) return { kind: 'door', item: o };
@@ -416,14 +544,7 @@ const Editor = {
       const o = this.floor.windows[i];
       if (this.hitOpening(o, wx, wy)) return { kind: 'window', item: o };
     }
-    for (let i = this.floor.furniture.length - 1; i >= 0; i--) {
-      const f = this.floor.furniture[i];
-      const S = furnSpec(f);   // 尺寸从目录形态解析
-      const tol = 0.2;
-      if (Math.abs(wx - f.x) < S.w * ((f.pct || 100) / 100) / 2 + tol && Math.abs(wy - f.y) < S.d * ((f.pct || 100) / 100) / 2 + tol) return { kind: 'furniture', item: f };
-    }
-    const hw = this.hitWall(wx, wy);
-    return hw ? { kind: 'wall', item: hw.wall } : null;
+    return null;
   },
 
   /* 门窗命中: 点击点到「洞口线段」（沿墙方向、长 o.w、中心 o.x/y）的距离 < 0.25m */
@@ -435,7 +556,9 @@ const Editor = {
     const l2 = dx * dx + dy * dy || 1;
     let t = ((wx - (o.x - hx)) * dx + (wy - (o.y - hy)) * dy) / l2;
     t = Math.max(0, Math.min(1, t));
-    return Math.hypot(wx - (o.x - hx + dx * t), wy - (o.y - hy + dy * t)) < 0.25;
+    /* 0.25m 对小符号偏窄；缩得很小时再补一条「至少 8 屏幕像素」的下限 */
+    const tol = Math.max(0.25, 8 / this.ppm);
+    return Math.hypot(wx - (o.x - hx + dx * t), wy - (o.y - hy + dy * t)) < tol;
   },
 
   /* 选中墙的端点圆圈命中（屏幕坐标）: 返回 { wall, end: 1|2 } 或 null。
@@ -571,68 +694,16 @@ const Editor = {
       }
     });
 
+    /* 三类元素都走「绘制函数」而不是内联：视觉层与拾取层（pickAt）共用同一份代码，
+     * 形状只有一处定义 —— 改绘制就同时改命中，不会两边漂移 */
     // 窗（墙上蓝条）
-    this.floor.windows.forEach((wd) => this.drawDoorWindow(wd, true));
+    this.floor.windows.forEach((wd) => this.drawDoorWindow(ctx, wd, true));
     // 门
-    this.floor.doors.forEach((d) => this.drawDoorWindow(d, false));
-
-    // 家具（尺寸/名称/颜色从目录形态解析 furnSpec，实例只存 mid + 摆放参数）
-    this.floor.furniture.forEach((f) => {
-      const [x, y] = this.toScreen(f.x, f.y);
-      const sel = this.selection && this.selection.kind === 'furniture' && this.selection.id === f.id;
-      const S = furnSpec(f);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(f.rot || 0);
-      const fpct = (f.pct || 100) / 100;
-      const fw = S.w * fpct * this.ppm, fd = S.d * fpct * this.ppm;
-      ctx.fillStyle = S.color + (sel ? '' : 'cc');
-      ctx.strokeStyle = sel ? '#3b82f6' : 'rgba(90,100,120,.55)';
-      ctx.lineWidth = sel ? 2 : 1.2;
-      roundRect(ctx, -fw / 2, -fd / 2, fw, fd, Math.min(6, fd / 3));
-      ctx.fill(); ctx.stroke();
-      if (fw > 34 && fd > 16) {
-        ctx.fillStyle = 'rgba(60,70,90,.75)';
-        ctx.font = Math.min(11, fd / 2.2) + 'px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(S.name, 0, 0);   // 文字中心 = 方块中心（文字随方块一起旋转）
-      }
-      ctx.restore();
-    });
-
-    // 设备: 平面简笔模型由插件自绘（plan2d 返回包围半径），编辑器只负责定位与选中虚线圈；
-    // 没写 plan2d 的插件用「圆角方块+圆点」中性符号兜底
-    this.floor.devices.forEach((d) => {
-      const [x, y] = this.toScreen(d.x, d.y);
-      const sel = this.selection && this.selection.kind === 'device' && this.selection.id === d.id;
-      const st = HA.getState(d.entityId);
-      const engine = (window.PluginEngine && PluginEngine.ready) ? PluginEngine : null;
-      /* 开/关判定统一走 HA.deviceIsOn（按 type/style 取插件顶层 isOn：窗帘 open / 扫地机
-       * cleaning / 音箱 playing 由插件自己判断；未声明或插件抛异常时回退 HA.isOn 默认规则） */
-      const on = HA.deviceIsOn(d);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate((d.rot || 0) * Math.PI / 180);   // 水平旋转(°)，与 3D body.rotation.y 同向（rotate 后画布上方=-Y 即设备朝向）
-      const plan = engine ? engine.devicePlan(d.type, d.style) : null;
-      /* 状态/选中视觉由抽象层接管:
-       * 1) 开/关 = plan2d 用 p.fill 给「线稿封闭形状内部」上色（贴合线框，透明角落不着色），
-       *    颜色来自统一调色板（开=暖琥珀 / 关=白）—— 编辑器不再画整圆背景
-       * 2) 选中 = 画完模型后统一叠加蓝色虚线圈（小模型贴合包裹 / 大模型封顶内叠）
-       * plan2d 只画中性线稿模型并返回包围半径 */
-      const pal = (window.PluginEngine && PluginEngine.devicePalette)
-        ? PluginEngine.devicePalette({ sel, on, hasState: !!st })
-        : { fill: on ? '#fdeecb' : '#fff', ink: st ? '#6b7280' : '#d94f4f', accent: '#c3cad6', accent2: '#9aa3b2', lw: 1.6 };
-      const p = {
-        sel, on, hasState: !!st, ppm: this.ppm, type: d.type,
-        style: String(d.style || '').split(':').pop(),
-        entityId: d.entityId, state: st, obj: d, getState: (id) => HA.getState(id),
-        ink: pal.ink, fill: pal.fill, accent: pal.accent, accent2: pal.accent2, lw: pal.lw,
-      };
-      const rr = plan ? plan(ctx, p) : this.drawDeviceGlyphFallback(on, !!st);
-      if (sel) this.drawSelRing(rr || 14);   // 半径在 drawSelRing 内做封顶：小模型贴合包裹 / 大模型内部叠加
-      ctx.restore();
-    });
+    this.floor.doors.forEach((d) => this.drawDoorWindow(ctx, d, false));
+    // 家具
+    this.floor.furniture.forEach((f) => this.drawFurniture(ctx, f));
+    // 设备
+    this.floor.devices.forEach((d) => this.drawDevice(ctx, d));
 
     // 绘制预览（画墙 / ghost）
     if (this.tool === 'wall' && this.wallStart) {
@@ -668,6 +739,69 @@ const Editor = {
     }
     this.drawAxisHint();
     this.drawRulers();
+  },
+
+  /* ============ 元素绘制（视觉层 / 拾取层共用） ============
+   * paint 为空 = 视觉层，按设计稿配色 + 选中态 + 文字；
+   * paint 有值 = 拾取层（见 buildPick），整块元素只画成这个唯一的 id 色。
+   * 之所以抽成函数：形状只写一份，改绘制就等于改命中，不会出现两套几何漂移。 */
+
+  /* 家具: 尺寸/名称/颜色从目录形态解析（furnSpec），实例只存 mid + 摆放参数 */
+  drawFurniture(ctx, f, paint) {
+    const [x, y] = this.toScreen(f.x, f.y);
+    const sel = !paint && this.selection && this.selection.kind === 'furniture' && this.selection.id === f.id;
+    const S = furnSpec(f);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(f.rot || 0);          // 家具 rot 存弧度（门窗/设备存度 —— 整链唯一的例外，别混用）
+    const fpct = (f.pct || 100) / 100;
+    const fw = S.w * fpct * this.ppm, fd = S.d * fpct * this.ppm;
+    ctx.fillStyle = paint ? paint.fill : S.color + (sel ? '' : 'cc');
+    ctx.strokeStyle = paint ? paint.ink : (sel ? '#3b82f6' : 'rgba(90,100,120,.55)');
+    ctx.lineWidth = paint ? 1 : (sel ? 2 : 1.2);
+    roundRect(ctx, -fw / 2, -fd / 2, fw, fd, Math.min(6, fd / 3));
+    ctx.fill(); ctx.stroke();
+    if (!paint && fw > 34 && fd > 16) {
+      ctx.fillStyle = 'rgba(60,70,90,.75)';
+      ctx.font = Math.min(11, fd / 2.2) + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(S.name, 0, 0);   // 文字中心 = 方块中心（文字随方块一起旋转）
+    }
+    ctx.restore();
+  },
+
+  /* 设备: 平面简笔模型由插件自绘（plan2d 返回包围半径），编辑器只负责定位与选中虚线圈；
+   * 没写 plan2d 的插件用「圆角方块+圆点」中性符号兜底 */
+  drawDevice(ctx, d, paint) {
+    const [x, y] = this.toScreen(d.x, d.y);
+    const sel = !paint && this.selection && this.selection.kind === 'device' && this.selection.id === d.id;
+    const st = HA.getState(d.entityId);
+    const engine = (window.PluginEngine && PluginEngine.ready) ? PluginEngine : null;
+    /* 开/关判定统一走 HA.deviceIsOn（按 type/style 取插件顶层 isOn：窗帘 open / 扫地机
+     * cleaning / 音箱 playing 由插件自己判断；未声明或插件抛异常时回退 HA.isOn 默认规则） */
+    const on = HA.deviceIsOn(d);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate((d.rot || 0) * Math.PI / 180);   // 水平旋转(°)，与 3D body.rotation.y 同向（rotate 后画布上方=-Y 即设备朝向）
+    const plan = engine ? engine.devicePlan(d.type, d.style) : null;
+    /* 状态/选中视觉由抽象层接管:
+     * 1) 开/关 = plan2d 用 p.fill 给「线稿封闭形状内部」上色（贴合线框，透明角落不着色），
+     *    颜色来自统一调色板（开=暖琥珀 / 关=白）—— 编辑器不再画整圆背景
+     * 2) 选中 = 画完模型后统一叠加蓝色虚线圈（小模型贴合包裹 / 大模型封顶内叠）
+     * plan2d 只画中性线稿模型并返回包围半径 */
+    const pal = paint || ((window.PluginEngine && PluginEngine.devicePalette)
+      ? PluginEngine.devicePalette({ sel, on, hasState: !!st })
+      : { fill: on ? '#fdeecb' : '#fff', ink: st ? '#6b7280' : '#d94f4f', accent: '#c3cad6', accent2: '#9aa3b2', lw: 1.6 });
+    const p = {
+      sel, on, hasState: !!st, ppm: this.ppm, type: d.type,
+      style: String(d.style || '').split(':').pop(),
+      entityId: d.entityId, state: st, obj: d, getState: (id) => HA.getState(id),
+      ink: pal.ink, fill: pal.fill, accent: pal.accent, accent2: pal.accent2, lw: pal.lw,
+    };
+    const rr = plan ? plan(ctx, p) : this.drawDeviceGlyphFallback(ctx, on, !!st, paint);
+    if (sel) this.drawSelRing(ctx, rr || 14);   // 半径在 drawSelRing 内做封顶：小模型贴合包裹 / 大模型内部叠加
+    ctx.restore();
   },
 
   /* Shift 正交锁定的状态提示：鼠标旁一小行灰字「水平」/「垂直」，
@@ -790,8 +924,7 @@ const Editor = {
   },
 
   /* 通用兜底: 设备插件没实现 plan2d 时的中性符号（圆角方块 + 圆点），返回包围半径 */
-  drawDeviceGlyphFallback(on, hasState) {
-    const ctx = this.ctx;
+  drawDeviceGlyphFallback(ctx, on, hasState, paint) {
     const s = 0.28 * this.ppm;
     const rad = Math.min(s / 4, 6);
     ctx.beginPath();
@@ -801,14 +934,16 @@ const Editor = {
     ctx.arcTo(-s / 2, s / 2, -s / 2, -s / 2, rad);
     ctx.arcTo(-s / 2, -s / 2, s / 2, -s / 2, rad);
     ctx.closePath();
-    ctx.fillStyle = on ? '#fdeecb' : '#fff';
+    ctx.fillStyle = paint ? paint.fill : (on ? '#fdeecb' : '#fff');
     ctx.fill();
-    ctx.lineWidth = 1.6;
-    ctx.strokeStyle = hasState ? '#6b7280' : '#d94f4f';
+    ctx.lineWidth = paint ? 1 : 1.6;
+    ctx.strokeStyle = paint ? paint.ink : (hasState ? '#6b7280' : '#d94f4f');
     ctx.stroke();
-    ctx.beginPath(); ctx.arc(0, 0, s * 0.14, 0, Math.PI * 2);
-    ctx.fillStyle = '#c3cad6';
-    ctx.fill();
+    if (!paint) {   // 中心圆点是装饰，拾取层不画（否则会盖成另一个色块）
+      ctx.beginPath(); ctx.arc(0, 0, s * 0.14, 0, Math.PI * 2);
+      ctx.fillStyle = '#c3cad6';
+      ctx.fill();
+    }
     return s * 0.72;
   },
 
@@ -816,8 +951,7 @@ const Editor = {
    * 线稿小 → 贴合式包裹（留 4px 呼吸空隙）；线稿大（如摄像头视场、空调内机）→
    * 圆环封顶后叠加画在线稿之上，作为「选中标记」而不是把整个符号圈起来 */
   SEL_RING_MAX: 26,
-  drawSelRing(r) {
-    const ctx = this.ctx;
+  drawSelRing(ctx, r) {
     const rr = Math.min(r + 4, this.SEL_RING_MAX);
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.arc(0, 0, rr, 0, Math.PI * 2);
@@ -829,11 +963,10 @@ const Editor = {
 
   /* 门窗平面符号: 造型差异由插件自绘（plan2d(c,p)），这里只负责定位/选中态和通用兜底。
    * 这样新增造型（推拉/对开/卷帘…）只改插件，编辑器不再堆积 sid 分支。 */
-  drawDoorWindow(d, isWindow) {
-    const ctx = this.ctx;
+  drawDoorWindow(ctx, d, isWindow, paint) {
     const [x, y] = this.toScreen(d.x, d.y);
     const kind = isWindow ? 'window' : 'door';
-    const sel = !!(this.selection && this.selection.kind === kind && this.selection.id === d.id);   // 只高亮被选中的那一个（之前只比 kind，选中任意一扇全部高亮）
+    const sel = !paint && !!(this.selection && this.selection.kind === kind && this.selection.id === d.id);   // 只高亮被选中的那一个（之前只比 kind，选中任意一扇全部高亮）
     const L = d.w * this.ppm;
     ctx.save();
     ctx.translate(x, y);
@@ -847,29 +980,33 @@ const Editor = {
     if (plan) {
       plan(ctx, {
         L, sel, on, ppm: this.ppm,
-        ink: sel ? '#3b82f6' : (isWindow ? '#7fb3e8' : '#2a3346'),
-        fill: on ? '#fdeecb' : '#fff',   // 开=暖琥珀 / 关=白，插件填进封闭形状内部（与设备同一套约定）
+        ink: paint ? paint.ink : (sel ? '#3b82f6' : (isWindow ? '#7fb3e8' : '#2a3346')),
+        fill: paint ? paint.fill : (on ? '#fdeecb' : '#fff'),   // 开=暖琥珀 / 关=白，插件填进封闭形状内部（与设备同一套约定）
+        accent: paint ? paint.accent : '#c3cad6',
+        accent2: paint ? paint.accent2 : '#9aa3b2',
+        lw: paint ? paint.lw : 1.6,
         entityId: d.entityId, state: get(d.entityId), obj: d, getState: get,
       });
     } else {
-      this.drawDoorWindowFallback(L, isWindow, sel, on);
+      this.drawDoorWindowFallback(ctx, L, isWindow, sel, on, paint);
     }
     ctx.restore();
   },
 
   /* 通用兜底: 不知道具体造型时只画「洞口矩形 + 中缝线」，插件实现 plan2d 后不会走到这里 */
-  drawDoorWindowFallback(L, isWindow, sel, on) {
-    const ctx = this.ctx;
-    ctx.fillStyle = on ? '#fdeecb' : '#fff';
-    ctx.strokeStyle = sel ? '#3b82f6' : (isWindow ? '#7fb3e8' : '#2a3346');
-    ctx.lineWidth = isWindow ? 2 : 1.6;
+  drawDoorWindowFallback(ctx, L, isWindow, sel, on, paint) {
+    ctx.fillStyle = paint ? paint.fill : (on ? '#fdeecb' : '#fff');
+    ctx.strokeStyle = paint ? paint.ink : (sel ? '#3b82f6' : (isWindow ? '#7fb3e8' : '#2a3346'));
+    ctx.lineWidth = paint ? 1 : (isWindow ? 2 : 1.6);
     const h = isWindow ? 6 : 5;
     ctx.fillRect(-L / 2, -3, L, h);
     ctx.strokeRect(-L / 2, -3, L, h);
-    ctx.beginPath();
-    ctx.moveTo(-L / 2, 0);
-    ctx.lineTo(L / 2, 0);
-    ctx.stroke();
+    if (!paint) {
+      ctx.beginPath();
+      ctx.moveTo(-L / 2, 0);
+      ctx.lineTo(L / 2, 0);
+      ctx.stroke();
+    }
   },
 };
 
@@ -882,6 +1019,48 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+/* 拾取层专用的「单色 ctx」：插件画 2D 符号时会用半透明装饰（例如摄像头的视场扇
+ * rgba(148,163,184,.12)）和 p.fill/p.ink。直接照搬会把下面的元素「染色」成读不出 id 的
+ * 中间色，那块区域就点不中了。
+ * 规则：不透明的颜色 → 全部换成这个元素的 id 色；半透明（alpha < 0.9）→ 什么都不画。
+ * 于是「实体轮廓」参与命中、「半透明装饰」既不命中也不遮挡下层，与肉眼看到的一致。 */
+function pickCtx(ctx, color) {
+  const solid = color, blank = 'rgba(0,0,0,0)';
+  return new Proxy(ctx, {
+    get(t, k) {
+      const v = t[k];
+      return typeof v === 'function' ? v.bind(t) : v;
+    },
+    set(t, k, v) {
+      if (k === 'fillStyle' || k === 'strokeStyle' || k === 'shadowColor') {
+        t[k] = colorAlpha(v) >= 0.9 ? solid : blank;
+        return true;
+      }
+      if (k === 'globalAlpha') { t[k] = v >= 0.9 ? 1 : 0; return true; }
+      if (k === 'globalCompositeOperation') { t[k] = 'source-over'; return true; }
+      t[k] = v;
+      return true;
+    },
+  });
+}
+
+/* 颜色不透明度，#rgb/#rrggbb/rgb()/命名色 一律当 1，rgba()/#rrggbbaa 取 alpha */
+function colorAlpha(v) {
+  if (typeof v !== 'string') return 1;   // 渐变 / 图案：按不透明处理
+  const s = v.trim().toLowerCase();
+  if (s.charAt(0) === '#') {
+    if (s.length === 9) return parseInt(s.slice(7, 9), 16) / 255;
+    if (s.length === 5) return parseInt(s.charAt(4) + s.charAt(4), 16) / 255;
+    return 1;
+  }
+  const m = s.match(/^rgba?\(([^)]+)\)$/);
+  if (m) {
+    const parts = m[1].split(',');
+    return parts.length >= 4 ? parseFloat(parts[3]) : 1;
+  }
+  return 1;
 }
 
 let _uidCounter = 0;
