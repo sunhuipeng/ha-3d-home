@@ -8,7 +8,8 @@
  * 服务端实现拆在 server/ 下的三个模块，本文件（服务端入口）只负责「启动 + 路由表 + HA 代理」：
  *   server/core.js     目录常量、运行模式、日志、data/*.json 持久化（含安装密钥）
  *   server/assets.js   HTTP 小工具、静态托管与缓存、家具目录合并、2D 参考底图
- *   server/plugins.js  插件清单扫描 + zip 安装（自带最小 zip 解析）
+ *   server/plugins.js  插件清单扫描 + zip 安装（按 kind 分流到插件/家具，自带最小 zip 解析）
+ *   server/catalog-import.js  家具包（kind: catalog）解析、安装、目录扫描
  *
  * 内存占用目标: < 50MB
  */
@@ -19,7 +20,8 @@ const https = require('https');
 const crypto = require('crypto');
 const core = require('./core');
 const { sendJSON, readBody, readRawBody, serveStatic, buildCatalog, saveRefImg, serveRefImg } = require('./assets');
-const { INSTALL_MAX_BYTES, PLUGIN_ID_RE, listPlugins, installPluginZip } = require('./plugins');
+const { catalogTypeDefs } = require('./catalog-import');
+const { INSTALL_MAX_BYTES, PLUGIN_ID_RE, listPlugins, installPackage } = require('./plugins');
 
 const { DATA_DIR, ASSET_DIR, CUSTOM_DIR, IS_PROD, log, logErr } = core;
 const PORT = parseInt(process.env.PORT || '8077', 10);
@@ -125,9 +127,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/refimg' && req.method === 'GET') return serveRefImg(res);
 
-    /* 资产目录（家具/模型库）：assets + custom 合并，custom 覆盖内置 */
+    /* 资产目录（家具/模型库）：assets + custom 合并，custom 覆盖内置。
+     * types = 家具分类枚举（唯一出处 assets/catalog.json 的 types），前端页签直接用它，
+     * 前端不再自带一份类型表 —— 前后端只有这一份定义。 */
     if (p === '/api/catalog' && req.method === 'GET') {
-      return sendJSON(res, 200, { items: buildCatalog() });
+      return sendJSON(res, 200, { items: buildCatalog(), types: catalogTypeDefs() });
     }
 
     /* 插件清单（assets/plugins 与 custom/plugins 下的 plugin.json；同目录名自定义覆盖内置） */
@@ -166,11 +170,13 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { key, keyTail: key.slice(-4) });
     }
 
-    /* ---- 远程安装插件：POST /api/plugins/install?id=<插件id>&version=<v> ----
-     * 请求体 = studio 打的 zip 原始字节（plugin.json + plugin.js + models/*.glb，无顶层目录）,
-     * 头 X-Install-Key 校验密钥。解压到 custom/plugins/<id>/，已存在则整体替换 ——
-     * 所以重复发布同一项目就是原地覆盖升级（目录名 = id = 项目 id）。
-     * 成功 200 { ok, id, version, files, upgraded }；失败非 2xx + { error }。 */
+    /* ---- 远程安装：POST /api/plugins/install?id=<项目id>&version=<v> ----
+     * 请求体 = studio 打的 zip 原始字节，按包内清单 kind 自动分流：
+     *   插件包（plugin.json + plugin.js + models/*.glb）→ custom/plugins/<id>/
+     *   家具包（item.json + 多个平铺 .glb）→ custom/models/<id>/（包内 id 必须与 ?id 一致）
+     * 头 X-Install-Key 校验密钥。已存在则整体替换 —— 重复发布同一项目就是原地覆盖升级
+     * （目录名 = id = 项目 id）。
+     * 成功 200 { ok, kind, id, version, … }；失败非 2xx + { error }。 */
     if (p === '/api/plugins/install' && req.method === 'POST') {
       const needKey = core.installKey();
       if (!needKey) {
@@ -195,18 +201,21 @@ const server = http.createServer(async (req, res) => {
       try { zipBuf = await readRawBody(req, INSTALL_MAX_BYTES); }
       catch (e) { return sendJSON(res, 413, { error: e.message }); }
       try {
-        return sendJSON(res, 200, await installPluginZip(zipBuf, id));
+        return sendJSON(res, 200, await installPackage(zipBuf, id));
       } catch (e) { return sendJSON(res, e.status || 500, { error: e.message }); }
     }
 
-    /* ---- 编辑页「导入插件」：本站 UI 直接上传 zip，id 从包内 plugin.json 读取，无需密钥 ----
-     * 与 install 走同一套解包/校验/落盘逻辑（installPluginZip）。 */
+    /* ---- 编辑页「导入插件」：本站 UI 直接上传 zip，id 从包内清单读取，无需密钥 ----
+     * 一个入口收两种包，按清单 kind 自动识别（前端流程与文案不变）：
+     *   插件包 kind: device / background（plugin.json + plugin.js）→ custom/plugins/<id>/
+     *   家具包 kind: catalog（item.json + 多个平铺 .glb）→ custom/models/<项目id>/
+     * 与远程 install 走同一套解包/校验/落盘逻辑（installPackage）。 */
     if (p === '/api/plugins/import' && req.method === 'POST') {
       let zipBuf;
       try { zipBuf = await readRawBody(req, INSTALL_MAX_BYTES); }
       catch (e) { return sendJSON(res, 413, { error: e.message }); }
       try {
-        return sendJSON(res, 200, await installPluginZip(zipBuf, null));
+        return sendJSON(res, 200, await installPackage(zipBuf, null));
       } catch (e) { return sendJSON(res, e.status || 500, { error: e.message }); }
     }
 

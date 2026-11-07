@@ -341,6 +341,10 @@ input[type="range"] { flex: 1; accent-color: var(--blue); }
 
 /* 导入插件 · 安装密钥行（studio 远程发布时填同一个值） */
 .imp-key { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8fafc; }
+/* 导入弹窗提示行（studio 地址链接等） */
+.modal-box > .tip { margin-top: 10px; font-size: 12px; color: var(--ink2); line-height: 1.6; }
+.modal-box > .tip a { color: var(--blue); text-decoration: none; font-weight: 600; }
+.modal-box > .tip a:hover { text-decoration: underline; }
 .imp-key-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .imp-key-head > span { font-size: 12px; font-weight: 600; color: var(--ink); }
 .imp-key-head em { font-style: normal; font-weight: 400; color: var(--ink2); margin-left: 4px; }

@@ -84,12 +84,12 @@ const AppComponent = {
       void this.entVersion;
       return furnitureTabs();
     },
-    /* 当前类型下的家具形态（null=全部; 'other'=自定义/未归类模型） */
+    /* 当前类型下的家具形态（null=全部; 'other'=其他，含历史数据里枚举外的野值） */
     furnListByCat() {
       void this.entVersion;
       const all = allFurniture();
       if (!this.furnCat) return all;
-      if (this.furnCat === 'other') return all.filter((f) => !isKnownFurnType(f.type));
+      if (this.furnCat === 'other') return all.filter((f) => isOtherFurnType(f.type));
       return all.filter((f) => f.type === this.furnCat);
     },
     /* 背景插件（按插件分组；面板只显示 icon + 文案，不做实时预览） */
@@ -129,11 +129,17 @@ const AppComponent = {
       void this.entVersion;   // HA 改名 / 插件加载完成后重算
       return itemDisplayName(this.selection.kind, it);
     },
-    /* 选中家具的固定类型（目录解析；「其他」类没有 → 面板显示手填模型地址行） */
+    /* 选中家具的固定类型（目录解析，枚举外的历史野值已归一成 other） */
     furnType() {
       const it = this.selItem;
       if (!it || !this.selection || this.selection.kind !== 'furniture') return '';
       return furnSpec(it).type;
+    },
+    /* 选中家具有没有可用模型：目录与实例都没给地址时，面板才露出「模型地址」手填行 */
+    selHasModel() {
+      const it = this.selItem;
+      if (!it || !this.selection || this.selection.kind !== 'furniture') return true;
+      return !!(it.model || furnSpec(it).model);
     },
     /* 选中家具的同类模型（右侧切换，按固定类型聚合） */
     sameModels() {
@@ -142,7 +148,8 @@ const AppComponent = {
       if (!it || this.selection.kind !== 'furniture') return [];
       const t = furnSpec(it).type;
       if (!t) return [];
-      return allFurniture().filter((f) => f.type === t);
+      /* 「其他」把野值一起收进来（归一后它们都显示为 other） */
+      return allFurniture().filter((f) => (t === 'other' ? isOtherFurnType(f.type) : f.type === t));
     },
     /* 选中对象的插件样式列表（右侧切换）: 设备按 type 聚合，门窗按插件 styles 聚合 */
     selStyleList() {
@@ -614,6 +621,28 @@ const AppComponent = {
       if (isNaN(v)) return;
       fl.wallOpacity = Math.min(100, Math.max(0, Math.round(v)));
       this.commit();
+    },
+
+    /* 层高(m)：实时预览。input（打字/点步进箭头）防抖 120ms 后重建 3D，change（失焦/回车）
+     * 立即收口并钳制到 2~6。打字途中不钳制——0.5 会被 2~6 夹成 2 反写回输入框，打断输入。
+     * 2D 平面不画层高，redraw2d 省掉；高度只影响 3D，由 commit 的 rebuild3D 刷新（wallH 在
+     * View3D.build 里读 fl.height）。 */
+    setFloorHeight(v, phase) {
+      const fl = this.cur;
+      if (!fl) return;
+      const h = parseFloat(v);
+      if (isNaN(h)) {
+        if (phase === 'change') { fl.height = 2.8; this.commit({ redraw2d: false }); }   // 清空/乱输，失焦兜底回默认
+        return;   // 输入中途（如「3.」）不更新，等下一个字符或失焦
+      }
+      clearTimeout(this._fhTimer);
+      if (phase === 'change') {
+        fl.height = Math.min(6, Math.max(2, h));
+        this.commit({ redraw2d: false });
+        return;
+      }
+      fl.height = h;
+      this._fhTimer = setTimeout(() => this.commit({ redraw2d: false }), 120);
     },
 
     /* ------- 数据卡（按楼层独立，动态数量，实体搜索输入） ------- */
@@ -1242,8 +1271,15 @@ const AppComponent = {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
-        this.importMsg = (d.upgraded ? '已升级插件 ' : '已导入插件 ') + d.id
-          + (d.version ? ' v' + d.version : '') + '，正在刷新…';
+        /* 家具包（kind: catalog）自带件数/包名，提示按类分开写，免得「已导入插件」误导 */
+        if (d.kind === 'catalog') {
+          this.importMsg = (d.upgraded ? '已升级家具包 ' : '已导入家具包 ')
+            + (d.name || d.id) + '（' + (d.count || 0) + ' 件家具）'
+            + (d.version ? ' v' + d.version : '') + '，正在刷新…';
+        } else {
+          this.importMsg = (d.upgraded ? '已升级插件 ' : '已导入插件 ') + d.id
+            + (d.version ? ' v' + d.version : '') + '，正在刷新…';
+        }
         this.importMsgOk = true;
         setTimeout(() => location.reload(), 900);      // 刷新后 /api/plugins 重新拉取并加载
       } catch (err) {

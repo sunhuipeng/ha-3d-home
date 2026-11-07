@@ -15,7 +15,7 @@
 ## 功能
 
 - 📐 **2D 户型编辑器**：墙体绘制（0.1m 网格吸附、实时长度）、门/窗、家具库（7 类型 × 任意形态，assets 目录动态扩展）、设备点位
-- 🛋 **家具摆放**：拖拽移动、旋转、调 X/Y/离地高度/整体比例（滑条实时预览 2D + 3D），同一类型可切换不同形态模型（GLB）；模型放 `assets/models/` 并在 `assets/catalog.json` 声明，重启即出现在家具库
+- 🛋 **家具摆放**：拖拽移动、旋转、调 X/Y/离地高度/整体比例（滑条实时预览 2D + 3D），同一类型可切换不同形态模型（GLB）；内置模型放 `assets/models/` 并在 `assets/catalog.json` 声明，自定义模型可以直接「导入插件」上传 zip（kind: catalog，见 [安装家具包](#家具包)）
 - 📡 **对接 Home Assistant**：浏览器**直连** HA WebSocket（`subscribe_entities` 实时推送，零延迟），支持灯光/开关/传感器/空调/窗帘/风扇等实体
 - 🏠 **3D 展示**：Three.js 渲染墙体/门窗/家具/吊灯，灯具开灯发光、彩色灯支持，点击设备直接控制，楼层切换
 - 📊 **实时数据**：天气 HUD（温度/湿度/天气现象）、可配置数据卡片、设备状态标签实时刷新、悬停查看状态
@@ -86,6 +86,7 @@ docker run -d --name ha-3d-home --restart unless-stopped \
 ```
 custom/
 ├─ models/        自定义家具模型 *.glb（与内置同 id 同名 → 直接替换该家具模型）
+│  └─ <项目id>/   导入的家具包：一个项目一个文件夹（item.json + 多个 glb，见「家具包」）
 ├─ plugins/       自定义插件 <目录>/plugin.json + plugin.js（同插件 id → 覆盖内置插件）
 └─ catalog.json   （可选）自定义家具清单，条目覆盖内置同名 id
 ```
@@ -95,25 +96,84 @@ custom/
 - 覆盖示例：想换内置的「双人床」模型，只需把新 glb 命名为与内置相同 id 放进 `custom/models/`，清单和代码都不用动
 - 自己写插件：目录结构 → [assets/plugins/README.md](assets/plugins/README.md)；写代码 → [PLUGIN-DEV.md](PLUGIN-DEV.md)（速览见 [插件开发](#插件开发)）
 
-## 安装插件（zip）
+## 安装包（zip）：插件与家具共用一个入口
+
+编辑器右上角「导入插件」收的是 **zip**，服务端按清单里的 `kind` 自动判断这是插件还是家具，前端流程与文案不变：
+
+| 包类型 | 判定依据 | 落地位置 |
+| --- | --- | --- |
+| 插件包 | `plugin.json` 的 `kind` = `device`（门窗 / 灯 / 开关…所有有状态设备）或 `background`（户外地面等背景），且包根有 `plugin.js` | `custom/plugins/<id>/` |
+| 家具包 | 包根有 `item.json`（`kind` = `catalog`），且带若干个 `.glb` 模型 | `custom/models/<项目id>/` |
+
+**`kind` 是必填项**：清单里没写 kind 直接拒绝导入（不再按文件形状猜类型），报错会点名是哪个文件缺 kind，避免装错位置后难排查。
+
+两类都**按 id 定位目录**：同一个 id 重复导入 = 整体覆盖升级（先写临时目录再原子替换，失败自动回滚旧版本）。
+
+### 插件包
 
 插件包结构（**无顶层目录**，和 studio 导出的压缩包一致）：
 
 ```
-plugin.json    清单：id / name / version / kind…（id 决定安装目录名）
+plugin.json    清单：id / name / version / kind（device 或 background）…（id 决定安装目录名）
 plugin.js      注册代码（PluginEngine.register）
 models/*.glb   可选，插件自带模型
 ```
 
-两种安装方式，落到同一个位置 `custom/plugins/<id>/`，**同 id 已存在则整体覆盖升级**（先写临时目录再原子替换，失败自动回滚旧版本）：
+两种安装方式，都落到 `custom/plugins/<id>/`：
 
 1. **编辑器右上角「导入插件」**：把 zip 拖进弹窗（或点选文件）→ 自动上传 → 成功后页面自动刷新，插件立即可用
 2. **远程安装（studio 一键发布）**：`POST /api/plugins/install?id=<id>&version=<v>`
    - 头 `X-Install-Key`：先在 HA 3D Home 里配安装密钥（见下），studio 设置里填同一个
    - 头 `Content-Type: application/zip`，body 就是 zip 字节
-   - 返回 200 `{ ok, id, version, upgraded, files }`；密钥错 401、包不合法 400
+   - 返回 200 `{ ok, kind, id, version, upgraded, files }`；密钥错 401、包不合法 400
+   - 插件包与家具包都收（按清单 `kind` 分流）；家具包的包内 `id` 必须与 URL 里的 `?id` 一致
 
-安装密钥配置（二选一，环境变量优先）：
+### 家具包
+
+**一个家具包 = studio 里的一个「家具项目」**，包里可以有多件家具（多个 glb），整包装到
+`custom/models/<项目id>/`。包内结构（`item.json` 与所有模型**平铺**在包根，允许整体套一层目录）：
+
+```
+item.json     包清单：kind: "catalog" + id（项目随机 id）+ items 数组（每个 glb 一条）
+sofa.glb      模型，与 item.json 平铺
+armchair.glb  想放几件放几件，每件在 items 里各占一条
+```
+
+清单示例：
+
+```json
+{
+  "kind": "catalog",
+  "id": "p_r7k2m9q1",
+  "name": "客餐厅套装",
+  "version": "1.0.0",
+  "items": [
+    { "id": "sofa", "name": "三人沙发", "type": "sofa", "w": 2.1, "d": 0.9, "h": 0.8,
+      "color": "#c9a26e", "model": "sofa.glb" },
+    { "id": "armchair", "name": "单人椅", "type": "sofa", "w": 0.8, "d": 0.82, "h": 0.78,
+      "model": "armchair.glb" }
+  ]
+}
+```
+
+- `id` **必填**（项目随机 id，小写字母/数字开头，字母/数字/_ . -，最长 64）：它就是安装目录名
+  `custom/models/<id>/`。**同一个 id 重复导入 = 整包覆盖升级**（先写临时目录再原子替换，失败回滚）
+- `name` / `version` 可选：包名用于导入成功提示；条目没写 `version` 时继承包级版本
+- `items` **必填且至少 1 条**，一条对应一个 glb：
+  - `items[].id` **包内唯一**即可 —— 最终目录条目 id 是 `<项目id>:<包内id>`，所以两个包都写 `sofa` 也不会互相顶掉
+  - `type` **必填**，且必须命中分类表（`assets/catalog.json` 的 `types`）：`sofa`（沙发/座椅）/ `bed`（床品）/ `table`（桌几）/ `cabinet`（柜架）/ `kitchen`（厨餐）/ `bath`（卫浴）/ `deco`（装饰）/ `other`（其他，不确定归哪类就写它）
+    - 缺失或超出 → **拒绝导入**并指出是第几条（大小写不敏感，存小写）
+    - 分类表**只有一处**：`assets/catalog.json` 的 `types` 数组。服务端按它校验导入的 type，前端通过 `GET /api/catalog` 的 `types` 字段拿到同一份来生成家具库页签 —— 加/删/改分类名只改这一处，两端同时生效，不用改代码
+    - `other` 的家具在家具库进「其他」页签
+  - `w` / `d` 必填（米，2D 摆放与碰撞按它算），`h` 缺省 0.6，`color` 缺省灰蓝
+  - `model` 写包内文件名即可；**省略时包里只能有一个 glb**，多模型必须逐条指明（否则报错列出候选）
+  - `icon` 可选（64×64 的 SVG 图元字符串，2D 平面图标，省了只画方块）、`scale` 可选（模型额外缩放）
+- 导入后服务端扫描 `custom/models/<项目id>/` 合并进 `GET /api/catalog`；内置家具仍是
+  `assets/catalog.json` + `assets/models/` 平铺，不受影响
+- 条目 id 带项目前缀，所以**不会覆盖内置家具**（想接管内置 `sofa` 请改 `custom/catalog.json`）
+- 老格式（一件家具一个目录、目录里放自己的 json + glb）仍然可读，目录名直接当条目 id
+
+## 安装密钥配置（二选一，环境变量优先）
 
 - 「连接与服务」弹窗里的**安装密钥**输入框（存 `data/install-key.json`，接口 `/api/install/config`）
 - 环境变量 `HA3D_INSTALL_KEY`（容器部署推荐，页面会显示为不可修改）
@@ -134,7 +194,8 @@ server/            后端（零 npm 依赖，只用 Node 内置模块）
   index.js         入口：启动 + 路由表 + HA REST 兜底代理
   core.js          目录常量 / 日志 / data 持久化（连接配置、安装密钥、户型项目）
   assets.js        HTTP 工具、静态托管与缓存、家具目录合并、2D 参考底图
-  plugins.js       插件清单扫描 + zip 安装（自带最小 zip 解析）
+  plugins.js       插件清单扫描 + zip 安装（按 kind 分流插件/家具，自带最小 zip 解析）
+  catalog-import.js 家具包（kind: catalog）清单校验、安装到 custom/models/<项目id>/、目录扫描
 public/            前端（编辑器 / 3D / HA 客户端，交互逻辑全在前端）
   index.html       编辑器（2D 户型 + 3D 预览 + 面板）
   display.html     大屏展示页（只读 + 场景执行 + 快捷设备）

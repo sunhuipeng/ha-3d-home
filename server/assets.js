@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ASSET_DIR, CUSTOM_DIR, PUBLIC_DIR, DATA_DIR, IS_PROD } = require('./core');
+const { scanImportedItems, catalogTypes } = require('./catalog-import');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
@@ -109,7 +110,9 @@ function serveStatic(req, res, u) {
 
 /* ---------------- 家具/模型目录合并 ----------------
  * 优先级（同 id 后者覆盖前者）:
- *   assets/catalog.json → custom/catalog.json → assets/models/*.glb → custom/models/*.glb
+ *   assets/catalog.json → custom/catalog.json → assets/models/*.glb
+ *   → custom/models/*.glb（旧的平铺方式，仍支持）
+ *   → custom/models/<id>/（导入的家具包：一个项目一个目录，item.json + 多个 glb）
  * 清单里没声明的 glb 也会被自动发现（auto: true，尺寸给通用默认值）。
  * 设备造型（styles）不在这里 —— 那些由插件在启动时注册到前端插件引擎。 */
 function readCatalogItems(dir) {
@@ -150,7 +153,21 @@ function buildCatalog() {
     }
   } catch (e) { /* ignore */ }
 
-  return Array.from(byId.values());
+  /* 导入的家具包（custom/models/<项目id>/ 一目录一个项目、内含多件）放最后 = 优先级最高：
+   * 整条条目来自包内 item.json，同一条目 id（<项目id>:<包内 id>）覆盖前面所有来源 */
+  for (const item of scanImportedItems()) byId.set(item.id, item);
+
+  /* type 收口：清单里的 type 必须命中 assets/catalog.json 的 types，否则统一归 other ——
+   * 让 /api/catalog 的 items 与同一响应里的 types 自洽（前端拿到的一定是合法枚举值）。
+   * 导入包在安装时就严格校验过了（缺失/超出直接拒绝），这里管的是手写的
+   * custom/catalog.json 和自动发现的 glb（autoItem 本来不带 type）。 */
+  const known = new Set(catalogTypes());
+  const items = Array.from(byId.values());
+  for (const it of items) {
+    const t = String(it.type == null ? '' : it.type).trim().toLowerCase();
+    it.type = (known.size && known.has(t)) ? t : 'other';
+  }
+  return items;
 }
 
 /* ---------------- 2D 参考底图 ----------------

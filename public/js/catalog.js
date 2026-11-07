@@ -2,7 +2,8 @@
  * catalog.js — 家具/设备目录（尺寸单位: 米）
  *
  * 数据模型:
- *   类型（type）: 有限枚举，代码固定（FURNITURE_TYPES / DEVICE_TYPES），不可增删
+ *   类型（type）: 家具类型 = assets/catalog.json 的 types（前后端共用的唯一出处，运行时下发）；
+ *                设备类型 = DEVICE_TYPES（代码内固定，与插件 domain 对应）
  *   形态（id）  : 同类型下的不同模型/样子，全部来自 assets（运行时动态加载）:
  *                 - 家具: /api/catalog = assets 与 custom 的 catalog.json 合并 + 扫描两处 models/*.glb
  *                 - 设备造型: 插件的 styles（assets/plugins/<id>/plugin.js），启动时注册进
@@ -26,16 +27,25 @@
  */
 'use strict';
 
-/* 家具类型（有限枚举，代码固定；左侧库聚合展示） */
-const FURNITURE_TYPES = [
-  { type: 'sofa',    name: '沙发/座椅' },
-  { type: 'bed',     name: '床品' },
-  { type: 'table',   name: '桌几' },
-  { type: 'cabinet', name: '柜架' },
-  { type: 'kitchen', name: '厨餐' },
-  { type: 'bath',    name: '卫浴' },
-  { type: 'deco',    name: '装饰' },
-];
+/* 家具类型（左侧库分类页签）
+ * **唯一出处是 assets/catalog.json 的 types**，由 /api/catalog 的 types 字段下发，loadCatalog()
+ * 时填进这里 —— 前端不再单独维护一份类型表。服务端（server/catalog-import.js）校验家具包的
+ * type 也是读同一个文件，所以「加/删一个分类」只改 catalog.json 一行，两端同时生效。
+ * 下面这个初始值只是服务端还没响应时的占位（此时目录 items 也为空，页签只剩「全部」）。 */
+let FURNITURE_TYPES = [{ type: 'other', name: '其他' }];
+
+/* 用服务端下发的 types 覆盖；兼容字符串写法（"sofa"）与对象写法（{type,name}） */
+function setFurnitureTypes(raw) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(raw) ? raw : []).forEach((t) => {
+    const type = String((t && t.type) || t || '').trim().toLowerCase();
+    if (!type || seen.has(type)) return;
+    seen.add(type);
+    out.push({ type, name: String((t && t.name) || type) });
+  });
+  if (out.length) FURNITURE_TYPES = out;
+}
 
 const CATALOG = { items: [] };
 
@@ -51,6 +61,7 @@ async function loadCatalog() {
       const r2 = await fetch('/assets/catalog.json?_=' + Date.now());
       data = await r2.json();
     }
+    if (!Array.isArray(data)) setFurnitureTypes(data.types);   // 分类枚举 = 服务端那一份
     const list = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : []);
     CATALOG.items = list
       .filter((x) => x && x.id && x.name && x.w && x.d)
@@ -151,15 +162,17 @@ function deviceDefaultZ(d, type) {
  *   已放置的家具实例只存 mid（形态标识），尺寸/名称等经 furnSpec() 解析
  */
 
-/* 「其他」分类: type 不在 FURNITURE_TYPES 枚举内的形态（用户自定义 / 自动发现的模型） */
+/* 「其他」分类 = type 为 other，或历史数据里枚举外的野值（旧版导入/自动发现的 glb） */
 function isKnownFurnType(t) { return FURNITURE_TYPES.some((c) => c.type === t); }
-function hasFurnOther() { return CATALOG.items.some((f) => !isKnownFurnType(f.type)); }
+function isOtherFurnType(t) { return t === 'other' || !isKnownFurnType(t); }
+function hasFurnOther() { return CATALOG.items.some((f) => isOtherFurnType(f.type)); }
 
 /* 家具面板的分类页签（与 deviceTabs 同思路，单一数据源派生）:
- * 顺序: 全部 → 各固定类型（该类型下有形态才显示）→ 其他（有自定义模型才显示） */
+ * 顺序: 全部 → 各固定类型（该类型下有形态才显示）→ 其他（有 other/野值形态才显示，固定排最后） */
 function furnitureTabs() {
   const tabs = [{ key: 'all', label: '全部' }];
   FURNITURE_TYPES.forEach((c) => {
+    if (c.type === 'other') return;   // 「其他」挪到最后，避免夹在装饰后面
     if (CATALOG.items.some((f) => f.type === c.type)) tabs.push({ key: c.type, label: c.name });
   });
   if (hasFurnOther()) tabs.push({ key: 'other', label: '其他' });
@@ -183,9 +196,10 @@ function furnVariantOf(f) {
  * 实例上只存 mid + 摆放参数（x/y/z/rot/pct），形态缺失（条目被删）时用默认尺寸兜底。 */
 function furnSpec(f) {
   const def = furnVariantOf(f) || {};
+  const t = def.type || 'other';
   return {
     def,
-    type: def.type || 'other',
+    type: isOtherFurnType(t) ? 'other' : t,   // 枚举外的历史野值统一按「其他」处理
     name: def.name || '',
     w: def.w != null ? def.w : 0.8,
     d: def.d != null ? def.d : 0.8,

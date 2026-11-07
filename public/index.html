@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HA 3D Home · 编辑</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/style.css?v=9">
+<link rel="stylesheet" href="/style.css?v=10">
 <style>
   /* 启动图: 覆盖 JS/CSS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
   #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
@@ -60,7 +60,7 @@
       <button class="tb-btn" :class="{primary: showLabels}" title="显示/隐藏 3D 设备标签" @click="toggleLabels">🏷 标签</button>
       <button class="tb-btn" title="长按 3D 画面可自定义旋转锚点；点此重置回房屋中心" @click="resetAnchor">◎ 重置锚点</button>
       <button class="tb-btn" @click="openConn">⛓ 连接</button>
-      <button class="tb-btn primary" title="上传 zip 插件包（同 id 覆盖升级）" @click="openImport">导入插件</button>
+      <button class="tb-btn primary" title="上传 zip 包：插件包（device/background）或家具包（catalog），同 id 覆盖升级" @click="openImport">导入插件/包</button>
     </div>
   </header>
 
@@ -144,7 +144,7 @@
         </div>
         <div class="sp-sec"><h4>楼层</h4>
           <div class="sp-row"><label>名称</label><input :value="cur.name" @change="cur.name = $event.target.value"></div>
-          <div class="sp-row"><label>层高</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @change="cur.height = parseFloat($event.target.value) || 2.8"></div>
+          <div class="sp-row"><label>层高</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @input="setFloorHeight($event.target.value, 'input')" @change="setFloorHeight($event.target.value, 'change')"></div>
           <div class="sp-btns">
             <button class="sp-btn" @click="addFloor">＋ 新楼层</button>
             <button class="sp-btn warn" :disabled="project.floors.length <= 1" @click="delFloor">删除本层</button>
@@ -218,7 +218,7 @@
               <input class="num-s" type="number" min="20" max="300" step="5" :value="selItem.pct || 100" @input="setFurnNum('pct', $event.target.value)" @wheel.prevent="wheelFurn('pct', $event, 5)">
             </div>
             <div class="sp-tip">拖动实时预览，2D 占位同步缩放；范围 20%–300%</div>
-            <div class="sp-row" v-if="!furnType"><label>模型地址</label><input placeholder="/assets/xx.glb" :value="selItem.model || ''" @change="selItem.model = $event.target.value.trim() || undefined; dirty()"></div>
+            <div class="sp-row" v-if="!selHasModel"><label>模型地址</label><input placeholder="/assets/xx.glb" :value="selItem.model || ''" @change="selItem.model = $event.target.value.trim() || undefined; dirty()"></div>
           </div>
         </template>
 
@@ -460,7 +460,7 @@
   <div id="importModal" class="modal" v-show="importOpen" @dragover.prevent @drop.prevent>
     <div class="modal-box">
       <div class="modal-head">
-        <div><div class="modal-sub">插件</div><h2>导入插件</h2></div>
+        <div><div class="modal-sub">插件 / 家具</div><h2>导入插件/包</h2></div>
         <button class="close" @click="closeImport">×</button>
       </div>
       <div class="imp-drop" :class="{ over: importDrag, busy: importing }"
@@ -470,12 +470,12 @@
         @dragleave.prevent="importDrag = false"
         @drop.prevent="onPluginDrop">
         <div class="imp-ic">{{ importing ? '⏳' : '📦' }}</div>
-        <div class="imp-t">{{ importing ? '正在导入 ' + (importFile ? importFile.name : '') + '…' : (importFile ? importFile.name : '拖拽 zip 插件包到这里') }}</div>
-        <div class="imp-s">{{ importing ? '服务器正在解压并写入自定义插件目录' : '或点击本区域选择 .zip 文件' }}</div>
+        <div class="imp-t">{{ importing ? '正在导入 ' + (importFile ? importFile.name : '') + '…' : (importFile ? importFile.name : '拖拽 zip 包到这里（插件包 / 家具包都可以）') }}</div>
+        <div class="imp-s">{{ importing ? '服务器正在解压并按包类型自动分流安装' : '或点击本区域选择 .zip 文件' }}</div>
       </div>
       <!-- 文件选择框放在拖拽区外面：否则 input.click() 的点击事件会冒泡回父级，形成反复打开选择框 -->
       <input ref="impFile" type="file" accept=".zip,application/zip" style="display:none" @change="onPluginPick">
-      <div class="tip">包内需含 <code>plugin.json</code>（插件 id 以清单为准）与 <code>plugin.js</code>，可带 <code>models/*.glb</code>；同 id 会整体覆盖升级。</div>
+      <div class="tip">可以在 <a href="https://gitee.com/sunhuip/ha3d-plugin-studio" target="_blank" rel="noopener">ha3d-plugin-studio</a> 项目中开发插件和家具包，打包后在这里导入（同 id 整包覆盖升级）。</div>
 
       <!-- 安装密钥：studio 发布插件（远程安装）时要在设置里填同一个值 -->
       <div class="imp-key">
@@ -538,12 +538,12 @@
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/js/ha.js?v=5"></script>
-<script src="/js/catalog.js?v=7"></script>
+<script src="/js/catalog.js?v=9"></script>
 <script src="/js/hud.js?v=1"></script>
 <script src="/js/editor.js?v=14"></script>
 <script src="/js/recode.js?v=3"></script>
 <script src="/js/plugins.js?v=20"></script>
 <script src="/js/view3d.js?v=15"></script>
-<script src="/js/app.js?v=19"></script>
+<script src="/js/app.js?v=22"></script>
 </body>
 </html>

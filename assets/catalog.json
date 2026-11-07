@@ -1,16 +1,27 @@
 {
   "$doc": {
     "说明": "家具形态清单（唯一数据源），运行时由 /api/catalog 动态加载；Docker 部署后直接改本文件 + 丢 GLB 进 models/，重启服务即生效，无需改代码",
-    "类型与形态": "类型(type) 是代码里固定的有限枚举（沙发/床/桌几/柜架/厨餐/卫浴/装饰，见 public/js/catalog.js 的 FURNITURE_TYPES）；形态(id) 是同一类型下的不同模型，全部写在本文件 items 中，由 assets 决定，代码不写死",
+    "类型与形态": "类型(type) 的唯一出处就是本文件的 types 数组（前后端共用这一份：服务端按它校验家具包的 type，前端按它生成家具库页签，改这里两边同时生效，不需要改代码）；形态(id) 是同一类型下的不同模型，全部写在本文件 items 中，由 assets 决定，代码不写死。type 是必填项：导入家具包时缺失或超出枚举会被拒绝（本文件内的条目请照枚举写，不确定归哪类写 other）",
     "items": "家具形态列表。id=形态标识（已放置家具实例通过 mid 字段引用它）；type=所属固定类型；name=显示名；w/d/h=尺寸(米)；color=兜底色；icon=平面图标(SVG 内部图元，见下条)；model=GLB 路径（相对 /assets/models/，默认 <id>.glb）；scale=模型额外缩放(可选)",
-    "未声明的模型": "models/ 下未在 items 里声明的 .glb 会被服务端扫描自动发现，归入 deco（装饰）类型，name=文件名；在 items 里补一条即可指定类型/尺寸/中文名",
+    "未声明的模型": "models/ 下未在 items 里声明的 .glb 会被服务端扫描自动发现，没有 type（前端归入「其他」），name=文件名；在 items 里补一条即可指定类型/尺寸/中文名",
     "设备造型": "不在本文件配置。有状态设备（灯/开关/传感器/空调/窗帘/风扇/摄像头/扫地机）的造型由 assets/plugins/<插件>/plugin.js 里的 styles 声明，启动时注册进插件引擎并自动聚合到界面",
+    "导入的家具": "编辑器右上角「导入插件」上传 kind:\"catalog\" 的 zip（包根一个 item.json + 若干平铺的 glb，items 数组每个模型一条），整包装到 custom/models/<项目id>/，服务端扫描后合并进本清单：目录条目 id = \"<项目id>:<包内条目id>\"，所以不会与内置条目重名。type 必填且必须命中本文件的 types，所以本文件不需要任何改动",
     "示例": [
       "新增一张床: 把 bed_king.glb 放进 assets/models/，在 items 里追加 {\"id\":\"bed_king\",\"type\":\"bed\",\"name\":\"特大床\",\"w\":2,\"d\":2.1,\"h\":0.5,\"color\":\"#b7c6d9\",\"icon\":\"<rect x=\\\"8\\\" y=\\\"6\\\" width=\\\"52\\\" height=\\\"34\\\" rx=\\\"3\\\" fill=\\\"none\\\" stroke=\\\"#5d6b82\\\" stroke-width=\\\"2.5\\\"/>\"}",
       "新增一种灯具造型: 在 assets/plugins/light/plugin.js 的 styles 里加 {id:'linear',name:'线性灯',z:2.75}"
     ],
     "icon": "平面图标：一段 SVG 内部图元（不要写 <svg> 外壳），坐标系固定 viewBox=\"0 0 68 46\"，引擎会按需缩放并套上 <svg>。用于家具库列表与属性面板的缩略图；不写则用通用方块。可自由增删图元/改配色，改完重启服务即生效，无需改代码"
   },
+  "types": [
+    { "type": "sofa",    "name": "沙发/座椅" },
+    { "type": "bed",     "name": "床品" },
+    { "type": "table",   "name": "桌几" },
+    { "type": "cabinet", "name": "柜架" },
+    { "type": "kitchen", "name": "厨餐" },
+    { "type": "bath",    "name": "卫浴" },
+    { "type": "deco",    "name": "装饰" },
+    { "type": "other",   "name": "其他" }
+  ],
   "items": [
     {
       "id": "sofa",
