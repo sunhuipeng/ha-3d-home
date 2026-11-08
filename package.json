@@ -7,9 +7,9 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
+    "pack:image:arm64": "bash scripts/pack-image.sh linux/arm64",
     "fix:glb": "python3 scripts/fix-glb-materials.py",
     "minify": "node scripts/minify-static.mjs --out dist-min public assets",
-    "pack:image:arm64": "bash scripts/pack-image.sh linux/arm64",
     "pack:image": "bash scripts/pack-image.sh",
     "fix:glb:check": "python3 scripts/fix-glb-materials.py --check",
     "pack:image:amd64": "bash scripts/pack-image.sh linux/amd64"

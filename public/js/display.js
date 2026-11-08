@@ -183,6 +183,7 @@ createApp({
         // 背景插件（3D 地面模型，扁平/立体/动态）；未选择时保持大屏浅灰底 + 网格
         const bgId = (this.project.settings && this.project.settings.background) || '';
         PluginEngine.bgOptions = (this.project.settings && this.project.settings.backgroundOptions) || {};
+        PluginEngine.bgFields = (this.project.settings && this.project.settings.backgroundFields) || {};
         if (bgId) PluginEngine.applyBackground(bgId, View3D);
       }
       View3D.startLoop();

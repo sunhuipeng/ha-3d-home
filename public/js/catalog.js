@@ -288,11 +288,16 @@ function serializeProject(p) {
   };
 
   /* 插件声明的绑定字段键（设备功率/温湿度、门窗开度实体…值都直接存在实例上）。
-   * 插件尚未加载时退化为「实例上的其它键原样保留」，宁可带上旧键也不丢绑定。 */
+   * 插件尚未加载时退化为「实例上的其它键原样保留」，宁可带上旧键也不丢绑定。
+   * 背景插件的 fields 是「动态实体订阅」声明，值存在 settings.backgroundFields 里、不落在实例上，
+   * 所以不进这个白名单（否则会污染设备实例的可保留键集合）。 */
   const PE = window.PluginEngine;
   const fieldKeys = new Set();
   if (PE && Array.isArray(PE.defs)) {
-    PE.defs.forEach((d) => (d.fields || []).forEach((f) => { if (f && f.key) fieldKeys.add(f.key); }));
+    PE.defs.forEach((d) => {
+      if (!d || d.kind === 'background') return;
+      (d.fields || []).forEach((f) => { if (f && f.key) fieldKeys.add(f.key); });
+    });
   }
   const copyFields = (out, obj) => {
     if (!obj) return;
@@ -380,10 +385,12 @@ function serializeProject(p) {
      * 旧版数据门窗 rot 存弧度，fetchProject 读档时按此标记迁移，写档后即带标记 */
     rotUnit: 'deg',
     floors: p.floors.map(floorOut),
-    /* settings = 项目级配置: 背景插件选择/参数 + 全局天气实体 */
+    /* settings = 项目级配置: 背景插件选择/参数/实体绑定 + 全局天气实体 */
     settings: {
       background: S(st.background),
       backgroundOptions: optObj(st.backgroundOptions) || {},
+      /* 背景 onData 的实体绑定: { '<插件id>:<背景id>': { 字段key: entityId } } */
+      backgroundFields: optObj(st.backgroundFields) || {},
       weatherEntity: S(st.weatherEntity),
     },
   };

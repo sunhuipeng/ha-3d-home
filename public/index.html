@@ -142,6 +142,22 @@
           </div>
           <div class="sp-tip">{{ bgMeta.hz ? '动态背景：引擎按 ' + bgMeta.hz + 'Hz 节流刷新，改参数即时重绘' : '静态背景：只在切换或房屋尺寸变化时绘制一次（零每帧开销）' }}</div>
         </div>
+
+        <!-- 背景插件：动态实体字段绑定（def.fields 声明 + 顶层 onData 回调）。
+             与设备/门窗的「实体绑定」同款区块，但值存 settings.backgroundFields、不落在实例上。 -->
+        <div class="sp-sec" v-if="bgFieldList.length"><h4>背景 ·实体绑定 </h4>
+          <div class="sp-field" v-for="f in bgFieldList" :key="'bf-' + f.key">
+            <div class="sp-field-hd">
+              <label>{{ f.label || f.key }}</label>
+              <span class="sp-val" :class="{bound: f.value}">{{ f.value || '未绑定' }}</span>
+              <button v-if="f.value" type="button" class="sp-clear" title="解除绑定" @click="setBgField(f.key, '')">✕</button>
+            </div>
+            <entity-input :placeholder="f.placeholder || 'entity.xxx'" :domains="f.domains || null" :model-value="f.value" @update:model-value="setBgField(f.key, $event)"></entity-input>
+            <div class="sp-tip" v-if="f.tip">{{ f.tip }}</div>
+          </div>
+          <div class="sp-tip">绑定的实体状态变化时自动回调插件顶层 onData(fields, api)；静态背景也能响应。未绑定或暂无数据时由插件自己回退</div>
+        </div>
+
         <div class="sp-sec"><h4>楼层</h4>
           <div class="sp-row"><label>名称</label><input :value="cur.name" @change="cur.name = $event.target.value"></div>
           <div class="sp-row"><label>层高</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @input="setFloorHeight($event.target.value, 'input')" @change="setFloorHeight($event.target.value, 'change')"></div>
@@ -150,7 +166,7 @@
             <button class="sp-btn warn" :disabled="project.floors.length <= 1" @click="delFloor">删除本层</button>
           </div>
         </div>
-        <div class="sp-sec"><h4>3D 数据展示</h4>
+        <div class="sp-sec"><h4>大屏左侧·数据卡片</h4>
           <div class="sp-row"><label>天气实体</label>
             <entity-input placeholder="weather.xxx（全局，所有楼层共用）" :model-value="project.settings.weatherEntity || ''" @update:model-value="setWeather($event)"></entity-input>
           </div>
@@ -161,7 +177,7 @@
           </div>
           <div class="sp-btns" style="margin-top:4px"><button class="sp-btn" @click="addCard">＋ 添加数据卡</button></div>
         </div>
-        <div class="sp-sec"><h4>展示大屏配置</h4>
+        <div class="sp-sec"><h4>大屏右侧·快捷卡片</h4>
           <div class="sp-tip">勾选的场景与设备将在展示大屏右侧显示，可点击执行/控制；按楼层独立配置</div>
           <div class="sp-btns">
             <button class="sp-btn" @click="openDispCfg">⚙ 配置大屏展示项</button>
@@ -538,12 +554,12 @@
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/js/ha.js?v=5"></script>
-<script src="/js/catalog.js?v=9"></script>
+<script src="/js/catalog.js?v=10"></script>
 <script src="/js/hud.js?v=1"></script>
 <script src="/js/editor.js?v=14"></script>
 <script src="/js/recode.js?v=3"></script>
-<script src="/js/plugins.js?v=20"></script>
+<script src="/js/plugins.js?v=21"></script>
 <script src="/js/view3d.js?v=15"></script>
-<script src="/js/app.js?v=22"></script>
+<script src="/js/app.js?v=24"></script>
 </body>
 </html>

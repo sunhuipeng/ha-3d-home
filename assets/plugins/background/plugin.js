@@ -120,6 +120,9 @@
  *   没有 texture / material / needsUpdate —— 动态改图请自己持有 CanvasTexture，
  *   改完直接 tex.needsUpdate = true（闭包里存着引用即可）
  *
+ *   顶层 onData(fields, api) 拿到的是同一份 api 再加 overlayGroup（数据专属子树），
+ *   见第七节；时间通道的 update 与数据通道的 onData 各管各的元素。
+ *
  * ============================================================================
  * 四、最小可跑示例（复制到 register 的 styles 数组里就能用）
  * ============================================================================
@@ -186,6 +189,23 @@
  *     自己加的立体体块贴着地面放即可（y=0 起步）。
  *   · apply() 是同步调用的：里面不要 fetch 大文件或等异步结果。
  *     要用图片素材，就在插件加载时预加载成 Image 存起来，apply 里直接画进 canvas。
+ *
+ * ============================================================================
+ * 七、动态实体字段 fields + 顶层 onData（本插件自带的可运行验证样例）
+ * ============================================================================
+ * 与 styles[].apply 返回值里的「时间通道」update(t, api) 并行，还有一条「数据通道」：
+ *   fields  写在**注册对象顶层**，声明订阅哪些 HA 实体（不是 styles[].options 的手工参数）
+ *   onData  写在**注册对象顶层**，绑定的实体 state / attributes 变化时才回调
+ * 引擎自动把专属子树 api.overlayGroup 挂在背景 group 下，重放时随 group 一起销毁重建；
+ * 本插件只往里放一块朝向相机的「天气牌」，地面/水波仍归各自的 apply 管，互不干扰。
+ * **静态背景（refresh:0）同样生效**；未绑定实体或 HA 还没连上时牌子自动隐藏，
+ * 原有 7 种地面的外观零改动。
+ *
+ * 验证步骤（home 编辑页）：选任意一个背景 → 右侧「实体绑定 · 背景」把
+ *   · 天气实体 → weather.home（演示模式下就是 partlycloudy / 18°C）
+ *   · 数值实体 → 任意 sensor.*（演示模式下 sensor.living_temp 每 3 秒变一次）
+ * 绑完房屋右上方的空中立刻出现天气牌，数值会自己刷新；接真实 HA 改天气状态，顶部色条与图标同步变。
+ * 完整契约见 PLUGIN-DEV.md 4.9。设备/门窗的实例级 fields 是另一套机制，不要混用。
  */
 'use strict';
 
@@ -438,6 +458,105 @@ function bgBuildMeadow(ctx) {
   return g;
 }
 
+/* ---------------- 顶层 onData：数据驱动的「天气牌」 ----------------
+ * 这是 fields / onData 契约的一个最小样例：只往 api.overlayGroup 里放东西，
+ * 与时间通道（apply 返回值里的 update）物理隔离。Sprite 始终朝向相机，
+ * 建一次复用：每次回调只重画它手里的 canvas 并标脏贴图，不反复分配 GPU 资源；
+ * 引用挂在 overlayGroup.userData 上，背景重放时会随 group 一起销毁（不做模块级缓存）。 */
+
+/* HA weather condition → 中文（没收录的原样显示，避免未知状态变成空白） */
+const BG_WEATHER = {
+  sunny: '晴', 'clear-night': '晴夜', partlycloudy: '局部多云', cloudy: '多云',
+  rainy: '雨', pouring: '大雨', snowy: '雪', fog: '雾', windy: '大风',
+  lightning: '雷电', 'lightning-rainy': '雷雨', hail: '冰雹',
+};
+
+/* 降水 / 雷电 → 冷色；阴天 / 雾 / 风 → 灰蓝；其余（晴）→ 暖黄 */
+function bgWet(state) {
+  return /rain|pouring|snow|hail|lightning|sleet/i.test(String(state || ''));
+}
+function bgAccent(w) {
+  if (!w) return '#7aa7d8';
+  const st = String(w.state || '');
+  if (bgWet(st)) return '#5ba7e8';
+  return /cloud|fog|wind|night/i.test(st) ? '#9fb4c9' : '#ffc85c';
+}
+
+/* 单行文字按可用宽度截断：浏览器用 measureText 量真实宽度，
+ * 没有 measureText 的环境（测试桩）按字宽粗估，保证长状态 / 长实体 id 不会画出牌子。 */
+function bgFitText(c, text, x, y, maxW) {
+  let s = String(text == null ? '' : text);
+  const widthOf = (t) => {
+    const m = c.measureText ? c.measureText(t) : null;
+    return m && isFinite(m.width) ? m.width : t.length * 14;
+  };
+  while (s.length > 4 && widthOf(s) > maxW) s = s.slice(0, s.length - 2) + '…';
+  c.fillText(s, x, y);
+}
+
+function bgMakeBadge(T) {
+  const cv = K.canvas(720);
+  cv.height = 260;                        // 720×260 ≈ 牌子比例，配合 sprite.scale 6.5×2.35
+  const tex = new T.CanvasTexture(cv);
+  const sprite = new T.Sprite(new T.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
+  }));
+  sprite.scale.set(6.5, 2.35, 1);
+  sprite.renderOrder = 999;               // 总在房屋 / 地面之上，方便一眼看到状态变化
+  sprite.visible = false;                 // 未绑定实体 / HA 未连上时保持原生地面
+  return { cv, tex, sprite };
+}
+
+/* w / m 都是 { entity_id, state, attributes } 或 null；两者都为 null 时不会调用到这里 */
+function bgDrawBadge(badge, w, m) {
+  const c = badge.cv.getContext('2d'), W = badge.cv.width, H = badge.cv.height;
+  const st = w ? String(w.state || '') : '';
+  const at = (w && w.attributes) || {};
+  const accent = bgAccent(w);
+  c.clearRect(0, 0, W, H);
+  c.fillStyle = 'rgba(16, 24, 36, 0.86)';
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = accent;
+  c.fillRect(0, 0, W, 9);                 // 顶部色条：天气一变最先看到它换色
+
+  /* 左侧圆形图标：晴 = 纯色日轮，降水 = 加三道白色雨丝 */
+  c.beginPath(); c.arc(92, 130, 54, 0, Math.PI * 2);
+  c.fillStyle = accent; c.fill();
+  if (bgWet(st)) {
+    c.strokeStyle = '#ffffff'; c.lineWidth = 7; c.lineCap = 'round';
+    for (let i = -1; i <= 1; i++) {
+      const x = 92 + i * 26;
+      c.beginPath(); c.moveTo(x + 4, 106); c.lineTo(x - 8, 150); c.stroke();
+    }
+  }
+
+  const font = (px, bold) => (bold ? 'bold ' : '') + px + 'px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif';
+  c.textBaseline = 'middle';
+  c.fillStyle = '#ffffff';
+  c.font = font(46, true);
+  c.fillText(w ? ('天气 · ' + (BG_WEATHER[st] || st || '未知')) : '数值', 178, 74);
+
+  /* 第二行：天气原始 condition + 温度（取 attributes，验证 attributes 变化也能触发回调） */
+  const unit = at.temperature_unit || '°C';
+  const temp = at.temperature != null ? at.temperature + unit : '';
+  const sub = w ? [st || w.entity_id, temp].filter(Boolean).join('   ·   ') : (m ? m.entity_id : '');
+  c.fillStyle = '#b9c9dc';
+  c.font = font(28, false);
+  c.fillText(sub, 178, 132);
+
+  /* 第三行：数值实体（任意 sensor.*）。演示模式下 sensor.living_temp 每 3 秒漂移，
+   * 不用接真实 HA 也能看到「状态变化 → onData → 牌子刷新」整条链路。 */
+  c.font = font(26, false);
+  if (m) {
+    const u = (m.attributes && m.attributes.unit_of_measurement) || '';
+    c.fillStyle = accent;
+    bgFitText(c, '数值 ' + m.state + (u ? ' ' + u : '') + '   ←   ' + m.entity_id, 178, 194, W - 178 - 24);
+  } else {
+    c.fillStyle = '#7d8ea3';
+    c.fillText('可再绑定数值实体，验证实时刷新', 178, 194);
+  }
+}
+
 /* ---------------- 注册 ----------------
  * 铺满/扁平组装/面板参数等底座全部来自 PluginEngine.bgKit（见文件顶部说明）。 */
 PluginEngine.register({
@@ -446,6 +565,14 @@ PluginEngine.register({
   kind: 'background',
   name: '户外地面',
 
+  /* 顶层动态实体订阅（第七节）：所有 7 种背景共用这一份声明，值按背景 id 独立存
+   * 在 settings.backgroundFields['background:<样式id>'] 里。options 是手工参数，别混。 */
+  fields: [
+    { key: 'weather', label: '天气实体', domains: ['weather'], placeholder: 'weather.home',
+      tip: '绑定 weather.* 实体；状态或温度变化会重画天气牌，静态背景同样生效' },
+    { key: 'metric', label: '数值实体', domains: ['sensor'], placeholder: 'sensor.living_temp',
+      tip: '任意 sensor.*，用于验证多字段订阅；演示模式下 sensor.living_temp 每 3 秒变化' },
+  ],
   /* 背景样式列表：与门窗/设备插件统一叫 styles（每项 apply(ctx) → { group }） */
   styles: [
     /* --- 扁平背景: 平面网格 + 画好的整图（tile 铺满在插件内部完成） --- */
@@ -505,6 +632,32 @@ PluginEngine.register({
       ],
       apply(ctx) { return { group: bgBuildMeadow(ctx) }; } },
   ],
+
+  /* 顶层数据通道：只负责天气牌这一小块元素，与上面每个 apply 的地面 / 水波完全隔离。
+   * fields 表里每个声明过的 key 都有值；未绑定 / HA 未连接时为 null ——
+   * 此时把牌子隐藏（回退成原生地面），不抛错、不画到已释放对象上。 */
+  onData(fields, api) {
+    const g = api && api.overlayGroup, ctx = api && api.ctx;
+    if (!g || !ctx || !ctx.THREE) return;
+    g.userData = g.userData || {};
+    let badge = g.userData.weatherBadge;
+    if (!badge) {
+      badge = bgMakeBadge(ctx.THREE);
+      g.userData.weatherBadge = badge;
+      /* overlay 的局部原点 = 背景中心；house.cx/cy 是房屋相对背景中心的偏移，
+       * 照它摆牌子，不管 offsetX/offsetZ 调成多少，牌子都跟在房屋右上方。
+       * 默认机位是 (9,10,11) 俯视，(+4, 5, -3) 落在画面里且不会压住屋顶。 */
+      const h = ctx.house || { cx: 0, cy: 0 };
+      badge.sprite.position.set(h.cx + 4, 5, h.cy - 3);
+      g.add(badge.sprite);
+    }
+    const w = (fields && fields.weather) || null;
+    const m = (fields && fields.metric) || null;
+    badge.sprite.visible = !!(w || m);
+    if (!badge.sprite.visible) return;
+    bgDrawBadge(badge, w, m);
+    badge.tex.needsUpdate = true;
+  },
 });
 
 })();

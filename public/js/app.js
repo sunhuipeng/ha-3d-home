@@ -122,6 +122,19 @@ const AppComponent = {
         value: saved[o.key] != null && saved[o.key] !== '' ? saved[o.key] : o.def,
       }));
     },
+    /* 当前背景的「动态实体字段」绑定区（def.fields 声明；值存 settings.backgroundFields）。
+     * 与 bgOptionList 的静态手工参数分开：这里的实体状态变化会回调插件顶层 onData(fields, api)。 */
+    bgFieldList() {
+      void this.entVersion;   // 插件异步加载完成后重算（loadAll 完成时会 entVersion++）
+      void this.bgTick;
+      if (!this.bgStyle || !window.PluginEngine || !PluginEngine.ready) return [];
+      const bd = PluginEngine.backgroundOf(this.bgStyle);
+      if (!bd || !Array.isArray(bd.fields) || !bd.fields.length) return [];
+      const saved = (PluginEngine.bgFields && PluginEngine.bgFields[this.bgStyle]) || {};
+      return bd.fields.filter((f) => f && f.key).map((f) => Object.assign({}, f, {
+        value: saved[f.key] || '',
+      }));
+    },
     /* 选中项标题（家具从目录形态解析；设备名跟随 HA，门窗跟随插件样式名） */
     selName() {
       const it = this.selItem;
@@ -764,21 +777,27 @@ const AppComponent = {
     /* ------- 背景（背景插件：统一返回 3D group，扁平或立体；静态或动态） ------- */
     applyBg() {
       if (!window.PluginEngine || !View3D.scene) return;
-      this.bindBgOptions();
+      this.bindBgSettings();
       PluginEngine.applyBackground(this.bgStyle, View3D);
     },
-    /* 把项目里的背景参数对象直接交给引擎（同一引用：面板改值 → 项目数据同步变 → 自动保存） */
-    bindBgOptions() {
+    /* 把项目里的背景参数 / 实体绑定对象直接交给引擎（同一引用：面板改值 → 项目数据同步变 → 自动保存） */
+    bindBgSettings() {
       if (!window.PluginEngine || !this.project) return;
       const s = this.project.settings || (this.project.settings = {});
       if (!s.backgroundOptions) s.backgroundOptions = {};
+      if (!s.backgroundFields) s.backgroundFields = {};
       PluginEngine.bgOptions = s.backgroundOptions;
+      PluginEngine.bgFields = s.backgroundFields;
+      /* bgOptions / bgFields 是挂在引擎上的普通对象（非 Vue 响应式）。首次初始化时
+       * 面板可能已经先算过一次空值并缓存，这里用 bgTick 让依赖它们的计算属性
+       * （bgOptionList / bgFieldList）在引用接好之后重算一次，避免刷新后显示旧值。 */
+      this.bgTick++;
     },
     /* 改背景参数: 只重绘地面（不重建户型），即时生效并自动保存。
      * 重绘做 90ms 防抖——自绘类背景（1024 贴图 + 撒点）不能让滑块的每个 input 都跑一遍 */
     setBgOpt(key, val) {
       if (!this.bgStyle || !window.PluginEngine) return;
-      this.bindBgOptions();
+      this.bindBgSettings();
       const store = PluginEngine.bgOptions;
       const cur = store[this.bgStyle] || (store[this.bgStyle] = {});
       cur[key] = val;
@@ -786,6 +805,19 @@ const AppComponent = {
       clearTimeout(this._bgOptTimer);
       this._bgOptTimer = setTimeout(() => this.applyBg(), 90);
       this.dirty();
+    },
+    /* 改背景的实体绑定：绑定只影响数据，不重建几何，所以只推一次 onData。
+     * 值存 settings.backgroundFields['<背景id>'][key]，换回默认绑定时删掉该键。 */
+    setBgField(key, val) {
+      if (!this.bgStyle || !window.PluginEngine || !key) return;
+      this.bindBgSettings();
+      const store = PluginEngine.bgFields;
+      const cur = store[this.bgStyle] || (store[this.bgStyle] = {});
+      const eid = String(val || '').trim();
+      if (eid) cur[key] = eid; else delete cur[key];
+      this.bgTick++;
+      this.dirty();
+      PluginEngine.notifyBackgroundData(true);
     },
     setBackground(b) {
       if (!this.project) return;

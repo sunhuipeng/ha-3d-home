@@ -182,6 +182,8 @@ update() {
 > `device` 插件的主实体由「设备绑定」管理，**不要再把 `entityId` 写进 `fields`**；门 / 窗没有主实体概念，所以字段全部用 `fields` 声明。
 >
 > **同 `type` 多插件时，`fields` 是「每个插件各写各的」**：属性面板展示的永远是**当前选中样式所属插件**声明的那份字段（切换样式即换一份，该插件没声明 `fields` 就整区隐藏）。别把一个形状的专属实体写进同 `type` 的另一个插件里——宁可每个插件各自声明，也不要为了「合并显示」去堆共享字段。
+>
+> **背景插件的 `fields` 是另一套机制**：它不落在设备实例 `obj[key]` 上，而是「动态实体订阅」声明 —— 引擎在实体状态变化时回调插件顶层的 `onData(fields, api)`。设备/门窗的实例级 `update()` 与背景的顶层 `onData()` 互不冲突、互不影响，详见 **4.9**。
 
 ### 1.4 生命周期回调一览
 
@@ -202,7 +204,8 @@ update() {
 | `defaultW` | number | 编辑器放置缺省宽度：door `0.9` / window `1.2` | 可选 |
 | `placeholder` | `{ w, h, color, y }` | 无插件/创建失败时的占位薄板（`y` 缺省 `h/2`） | 可选 |
 | `apply(ctx)` | 返回 `{ group }`（可附 `refresh` / `update` / `size`） | 背景被选用时 | background ✅ |
-| `update(t, api)` | `t` 秒、`api` 句柄 | `refresh > 0` 时按 Hz 调用 | 可选（background） |
+| `update(t, api)` | `t` 秒、`api` 句柄 | `refresh > 0` 时按 Hz 调用（时间驱动） | 可选（background，写在 `apply` 返回值里） |
+| `onData(fields, api)` | 字段状态表、`api` 句柄（含 `overlayGroup`） | 绑定的实体数据变化时；**与 `refresh` 无关，静态背景也生效** | 可选（background，写在注册对象顶层，见 4.9） |
 | `plan2d(c, p)` | `(CanvasRenderingContext2D, p) => number \| void` | 编辑器重绘 2D 平面图时（按需渲染，不是 rAF 每帧）；建议返回包围半径 px | 可选（见 2.8 / 3.5） |
 
 ### 1.5 通用注意事项
@@ -863,6 +866,9 @@ PluginEngine.register({
   id: 'mybg',
   kind: 'background',
   name: '我的背景',            // 面板分组标题固定取插件 name
+  // 可选：动态实体字段 + 数据回调（写在注册对象顶层，不是 styles 里；完整契约见 4.9）
+  // fields: [{ key: 'weather', label: '天气', domains: ['weather'] }],
+  // onData(fields, api) { /* 用 api.overlayGroup 画太阳 / 雨，实体状态变了自动更新 */ },
   styles: [
     {
       id: 'lawn',             // 插件内唯一即可；引擎加前缀后全局 id = 'mybg:lawn'
@@ -1042,6 +1048,77 @@ options: [
 2. **`apply()` 是同步调用**：要用的图片在插件加载时预加载成 `Image`，`apply` 里画进 canvas 再交 `ctx.plane(canvas)`；返回值里没有 `url`，引擎也不代加载。
 3. **必须返回 `{ group }`**：只返回 canvas / url / texture（没有 group）会被当成没画好，引擎直接清空背景、什么都不显示。
 4. **静态背景不要声明 `refresh`**：静态只在切换背景或房屋尺寸变化时画一次，零每帧开销。
+5. **`onData` 里不要做时间动画**：它只在实体数据变化时被调用，不是每帧。云飘 / 水流 / 太阳沿轨迹移动一律放 `update(t, api)`；`onData` 只决定「现在该不该有太阳 / 下不下雨 / 亮度多少」。
+
+### 4.9 动态实体字段 `fields` 与顶层 `onData`（背景专用）
+
+背景可以接管房屋之外的整个立体空间，其中一部分元素（太阳、雨、天气牌、光照强度）并不是「随时间匀速运动」，而是**跟着外部实体数据切换**。为此背景插件有两条**并存且互不干扰**的更新通道：
+
+| | 时间通道 | 数据通道 |
+|---|---|---|
+| 写在哪 | `styles[].apply(ctx)` 的返回值里 | 注册对象**顶层** |
+| 回调 | `update(t, api)` | `onData(fields, api)` |
+| 触发 | `refresh > 0` 时按 Hz 节流 | 绑定的实体状态变化（含首帧与 HA 全量快照） |
+| 负责 | 地面、水、云等持续运动 | 太阳、雨、天气状态等按数据切换 |
+| 静态背景 | 不进调度 | **照样生效**（与 `refresh` 无关） |
+
+**声明**：`fields` 写在注册对象顶层，和设备插件的字段结构一样（`key` / `label` / `domains` / `placeholder` / `tip`），但含义不同 —— 它是「订阅哪些实体」，不落到设备实例上。
+
+```js
+PluginEngine.register({
+  id: 'sky-weather',
+  kind: 'background',
+  name: '天气天空',
+  fields: [
+    { key: 'weather', label: '天气实体', domains: ['weather'] },
+    { key: 'lux',     label: '照度',     domains: ['sensor'] },
+  ],
+  styles: [{
+    id: 'default', name: '天空', refresh: 24,
+    apply(ctx) {
+      const g = new ctx.THREE.Group();
+      /* 地面 / 水 / 云：时间驱动，写这里 */
+      return { group: g, update(t, api) { /* 云飘、水流 */ } };
+    },
+  }],
+  /* 顶层数据通道：只负责跟着实体切的那部分元素 */
+  onData(fields, api) {
+    const T = api.ctx.THREE;
+    const g = api.overlayGroup;
+    if (!g) return;
+    /* 元素少、调用频率低，整块重建最省心（不要缓存到模块级变量） */
+    while (g.children.length) g.remove(g.children[0]);
+    const st = fields.weather && fields.weather.state;   // 'sunny' / 'rainy' / 'cloudy' …
+    const rainy = st === 'rainy' || st === 'pouring' || st === 'lightning-rainy';
+    if (!rainy) {
+      const sun = new T.Mesh(new T.SphereGeometry(1.6, 16, 12),
+        new T.MeshBasicMaterial({ color: 0xffd76a }));
+      sun.position.set(18, 26, -20);
+      g.add(sun);
+    }
+    /* 雨、雪、雾同理；fields.lux 是 sensor 的 state 字符串，可直接 parseFloat */
+  },
+});
+```
+
+**可直接跑的样例**：内置「户外地面」插件 `assets/plugins/background/plugin.js` 顶层就声明了 `fields`（`weather` / `metric`）和 `onData()`，在 `api.overlayGroup` 里放一个 Sprite 天气牌。验证步骤：home 编辑页选任意背景 → 右侧「实体绑定 · 背景」把天气绑到 `weather.home`、数值绑到任意 `sensor.*`（演示模式下 `sensor.living_temp` 每 3 秒漂移，不用接真实 HA 就能看到刷新）→ 房屋右上方空中出现天气牌，状态/温度/数值随实体变化。未绑定实体或 HA 未连上时牌子自动隐藏，7 种地面的原有外观零改动；静态背景（`refresh:0`）同样生效。注意改过 `plugin.js` 要同步升 `plugin.json` 的 `version`（`?v=` 长缓存）。
+
+**回调参数**
+
+- `fields`：`{ <字段key>: { entity_id, state, attributes } | null }`。每个声明过的 key 都在表里；**未绑定、实体还没推过来、HA 未连接时为 `null`** —— 首屏很常见，插件必须自己写回退值（例如默认晴天）。`attributes` 里是温度、湿度、单位等，天气的中文映射可参考 `public/js/hud.js` 的 `HUD.weatherState()`。
+- `api`：`{ group, mesh, size, overlayGroup, options, ctx }`。`overlayGroup` 是引擎自动建好、挂在背景 `group` 下的专属子树 —— **把数据驱动的元素都加到这里**，与 `apply` 画的内容物理隔离；背景重放时它随 `group` 一起销毁重建，所以不要跨回调缓存 mesh 引用。`ctx` 就是 `apply(ctx)` 那份（含 `THREE` / `house` / `safe` / `options`）。
+
+**绑定与持久化**：用户在右侧属性面板「**实体绑定 · 背景**」分组里按字段绑定实体（与设备/门窗的实体绑定同款界面：字段名 + 未绑定状态 + 输入框 + tip；可复用项目级 `settings.weatherEntity` 填的 id，但不自动带过来），值存 `project.settings.backgroundFields['<插件id>:<背景id>'] = { 字段key: entityId }`，与 `backgroundOptions` 平级，按背景 id 独立。改绑定只推一次 `onData`，不会重建整个背景。
+
+**引擎的调度细节**（写插件时知道即可）：
+
+1. `applyBackground` 挂载成功后立刻补一次 `onData`（首帧，HA 可能还没连上）；
+2. HA 连上推送全量快照时强制再补一次，首屏天气这时才真正到位；
+3. 之后的每次 HA `change`，引擎对所有绑定字段做一次**值快照对比**（`state` + `attributes`），只有真的变了才回调 —— HA 的增量事件不一定带实体 id，所以不能靠事件参数过滤；顺带完成去重；
+4. 背景重放（切换背景 / 改参数 / 房屋尺寸变化）会清掉旧记录并重新走 1，**不会写到已释放对象上**；
+5. 没有 `fields` / `onData` 的老插件完全走原路径，零改动兼容。
+
+**在 studio 里开发调试**：预览引擎实现了同一套契约。项目 `fields` 会自动生成 mock 实体（左下角「预览状态」里可点切换），用 MCP 的 `studio_set_entity` 改状态即可触发 `onData` 并截图验证；`weather` 域的 mock 缺省是 `sunny`。导出/发布的是干净 `plugin.js`，顶层的 `fields` / `onData` 会原样带走。
 
 ---
 
@@ -1058,6 +1135,7 @@ options: [
 | 门窗变成半透明板 | ①`type` 没写或不是 `door` / `window`；②门/窗实例的 `obj.style` 指向了别的插件；③本插件 `model3d` 抛错或没返回 `group` |
 | 样式按钮里没有我的造型 | `styles` 为空、条目缺 `id`/`name`，或 `type` 与实例类型不一致 |
 | 样式参数面板不出现 | 当前样式没声明 `options`，或 `settings.backgroundOptions` / `styleOpts` 里存的是空值（会回退 `def`） |
+| 背景 `onData` 不触发 | 顶层 `onData` 是否写对（不是 `apply` 返回值里的 `update`）；`fields` 有没有非空 `key`；属性面板里有没有绑实体；`PluginEngine.bgData` 是否为 null |
 
 常用调试手段：
 
@@ -1067,6 +1145,7 @@ PluginEngine.byId;                            // 已注册插件表
 PluginEngine.defs;                            // 已注册插件数组（按加载顺序）
 PluginEngine.instances;                       // 当前场景实例
 PluginEngine.bgAnim;                          // 动态背景运行态 { id, hz, interval, t, api }
+PluginEngine.bgData;                          // 背景 onData 运行态 { id, fields, snap, errs }
 PluginEngine.styles('light');                 // 某类型的全部造型（含插件前缀 id）
 PluginEngine.defFor('door', 'door:double');   // 某造型实际由哪个插件负责
 ```

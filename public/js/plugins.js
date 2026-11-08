@@ -146,9 +146,14 @@ const PluginEngine = {
         s.onload = res; s.onerror = res;
         document.head.appendChild(s);
       })));
-      // 引擎统一监听 HA 实体状态变化，分发给所有插件实例
+      // 引擎统一监听 HA 实体状态变化，分发给所有插件实例 + 背景的实体数据通道
       if (window.HA && HA.on) {
-        HA.on('change', () => this.updateAll());
+        HA.on('change', (ev) => {
+          this.updateAll();
+          /* full = HA 连上后的全量快照，首屏数据这时才到，强制补一次 onData；
+             增量 / 批次不强制，靠绑定值快照对比去重（HA 事件不一定带实体 id）。 */
+          this.notifyBackgroundData(!!(ev && ev.full));
+        });
       }
       this._ready = true;
       this.updateAll();
@@ -480,6 +485,8 @@ const PluginEngine = {
 
   bgAnim: null,     // 当前动态背景的运行记录 { id, hz, interval, acc, t, fn, api, errs }
   bgOptions: {},    // 背景参数值: { '<插件id>:<背景id>': { key: value } }（app 注入 project.settings.backgroundOptions 的引用）
+  bgFields: {},     // 背景实体绑定: { '<插件id>:<背景id>': { 字段key: entityId } }（app 注入 project.settings.backgroundFields 的引用）
+  bgData: null,     // 当前 onData 运行记录 { id, fn, fields, api, snap, errs }
 
   /* 全部背景（带插件前缀；条目聚合与设备/门窗样式共用 prefixItem） */
   backgrounds() {
@@ -492,6 +499,11 @@ const PluginEngine = {
           group: def.name || def.id,
           icon: b.icon || '🖼',
           hz: this.refreshOf(b),
+          /* def 顶层契约桥接到聚合条目（prefixItem 只展开 style 条目，顶层字段到不了这里）:
+           *   fields → 属性面板渲染「实体绑定」区；onData → 引擎的实体数据通道。
+           * 顶层优先于条目同名键，避免插件把数据回调误写进 styles[].apply 的返回值里。 */
+          fields: Array.isArray(def.fields) ? def.fields : [],
+          onData: typeof def.onData === 'function' ? def.onData : null,
         }));
       });
     });
@@ -550,15 +562,17 @@ const PluginEngine = {
   migrateProjectBg(settings) {
     if (!settings || typeof settings !== 'object') return;
     if (settings.background) settings.background = this.migrateBgId(settings.background);
-    const opts = settings.backgroundOptions;
-    if (opts && typeof opts === 'object') {
-      Object.keys(opts).forEach((k) => {
+    const remapKeys = (bag, merge) => {
+      if (!bag || typeof bag !== 'object') return;
+      Object.keys(bag).forEach((k) => {
         const nk = this.migrateBgId(k);
         if (nk === k) return;
-        opts[nk] = Object.assign({}, opts[k], opts[nk] || {});   // 新键已有的值优先
-        delete opts[k];
+        bag[nk] = merge ? Object.assign({}, bag[k], bag[nk] || {}) : bag[k];
+        delete bag[k];
       });
-    }
+    };
+    remapKeys(settings.backgroundOptions, true);   // 新键已有的值优先
+    remapKeys(settings.backgroundFields, true);    // 实体绑定按同一套背景 id 迁移
   },
 
   backgroundOf(id) {
@@ -596,6 +610,9 @@ const PluginEngine = {
     const bd = this.backgroundOf(id);
     if (!bd) { v3.bgId = ''; clearAll(); return false; }
     v3.bgId = bd.id;   // 记住当前背景（已归一化）: 房屋尺寸变化时 view3d.build 会据此重放
+    /* def 顶层的数据通道：fields 是「绑定哪些实体」的声明，onData 是「数据变了怎么画」的回调 */
+    const dataFn = typeof bd.onData === 'function' ? bd.onData : null;
+    const dataFields = Array.isArray(bd.fields) ? bd.fields.filter((f) => f && f.key) : [];
 
     /* 真实房屋包围盒（世界坐标）。背景自己在「背景坐标系」里画，房屋可以不在画面中心，
      * 所以下面要把它换算到背景坐标系（原点 = 背景中心），换算量就是偏移参数。 */
@@ -671,6 +688,17 @@ const PluginEngine = {
     /* 挂载: 统一 3D 模型 —— apply 必须返回 { group, update? }（扁平背景也是一个平面网格的 group） */
     if (!out.group) { clearAll(); return false; }
 
+    /* onData 专属子树：顶层数据通道只负责这部分元素（太阳 / 雨 / 天气牌…），
+     * 与 styles[].apply 的时间通道 update(t, api) 物理隔离、各管各的子树。
+     * 它挂在背景 group 下，重放时随 group 一起销毁重建 —— 插件不必缓存模块级引用，
+     * 也就不会把元素写到已释放对象上。静态背景（refresh:0）同样会建。 */
+    let overlay = null;
+    if (dataFn && dataFields.length && window.THREE) {
+      overlay = new window.THREE.Group();
+      overlay.name = 'onData-overlay';
+      out.group.add(overlay);
+    }
+
     /* 落位：group 的局部原点 = 背景中心，摆到世界里的「房屋中心 − 偏移」处。
      * 于是世界里的房屋纹丝不动，背景整体绕着它偏 —— 等价于「房屋偏离背景中心」。
      * 方向沿用统一手感（往右拖 = 背景往左/上）：
@@ -680,26 +708,68 @@ const PluginEngine = {
 
     const handle = v3.setBackdrop(out.group);
     if (!handle) return false;
-    if (upd && hz > 0) this._startBackground(bd.id, hz, upd, handle, out);
+
+    /* 两个通道共用一份只读 api（数据通道多一个 overlayGroup） */
+    const api = {
+      group: handle.group || out.group || null,
+      mesh: handle.mesh || null,
+      size: out.size || 512,
+      overlayGroup: overlay,
+      options: bgOpts,
+      ctx,
+    };
+    if (upd && hz > 0) this._startBackground(bd.id, hz, upd, api);
+    if (dataFn && dataFields.length) this._startBackgroundData(bd.id, dataFn, dataFields, api, true);
     return true;
   },
 
   /* ---------------- 动态背景（refresh > 0 才会走到这里） ---------------- */
-  _startBackground(id, hz, fn, handle, out) {
-    /* api 只暴露只读引用：动态改图由插件自己持有 CanvasTexture 并标脏，
-     * 引擎不再提供 needsUpdate()/texture 回写（统一 group 模型下没有"当前贴图"的概念） */
-    const api = {
-      group: handle.group || (out.group || null),
-      mesh: handle.mesh || null,
-      size: out.size || 512,
-    };
+  /* api 由 applyBackground 统一构造（时间通道与数据通道共用一份只读引用） */
+  _startBackground(id, hz, fn, api) {
     const rec = { id, hz, interval: 1 / hz, next: 1 / hz, t: 0, fn, api, errs: 0 };
     this.bgAnim = rec;
     try { fn(0, api); } catch (e) { this._bgFail(rec, e); }   // 立刻画一帧，避免首帧空白
     return rec;
   },
 
-  stopBackground() { this.bgAnim = null; },
+  /* ---------------- 背景实体数据通道（def 顶层 onData） ----------------
+   * 与设备类「每实例 obj[key] + 实例级 update()」不同：背景是单实例、按场景重放，
+   * 所以只在插件定义顶层订阅一次。HA 事件不一定带实体 id（batch 只说"有变化"），
+   * 引擎对所有绑定字段做一次值快照对比，变了才回调 —— 顺带解决去重和「任意实体」通用性。
+   * 没有 fields / onData 的老插件完全走原路径，零改动兼容。 */
+  _startBackgroundData(id, fn, fields, api, initial) {
+    const rec = { id, fn, fields, api, snap: null, errs: 0 };
+    this.bgData = rec;
+    if (initial) this.notifyBackgroundData(true);   // 首帧补一次（此时 HA 可能还没连上）
+    return rec;
+  },
+
+  /* HA change / 首帧 / 用户改绑定时调用。force=true 跳过快照对比（全量快照、换绑定）。 */
+  notifyBackgroundData(force) {
+    const rec = this.bgData;
+    if (!rec || typeof rec.fn !== 'function') return;
+    const binds = (this.bgFields && this.bgFields[rec.id]) || {};
+    const A = window.HA;
+    const vals = {};
+    let sig = '';
+    (rec.fields || []).forEach((f) => {
+      const eid = String(binds[f.key] || '').trim();
+      const st = eid && A && typeof A.getState === 'function' ? A.getState(eid) : null;
+      /* 未绑定 / 实体状态还没推过来 → null，插件自己写回退值（首屏很常见） */
+      const v = st ? { entity_id: eid, state: st.state, attributes: st.attributes || {} } : null;
+      vals[f.key] = v;
+      sig += '|' + f.key + '=' + (v ? JSON.stringify([v.state, v.attributes]) : '-');
+    });
+    if (!force && sig === rec.snap) return;
+    rec.snap = sig;
+    try { rec.fn(vals, rec.api); }
+    catch (e) {
+      rec.errs++;
+      if (rec.errs === 1) console.warn('[PluginEngine] 背景 onData 出错:', rec.id, e);
+    }
+  },
+
+  stopBackground() { this.bgAnim = null; this.bgData = null; },
 
   /* 由 view3d.startLoop → tick 每帧驱动，按各自刷新率节流；静态背景不进这里，零开销。
    * 用「下一次触发时刻」而不是累加器：60fps 下跑 10Hz 不会因为浮点漂移少触发。 */
