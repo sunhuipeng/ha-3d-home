@@ -1063,8 +1063,7 @@ function colorAlpha(v) {
   return 1;
 }
 
-let _uidCounter = 0;
-function uid() { return 'i' + Date.now().toString(36) + (++_uidCounter).toString(36); }
+/* uid() 已下沉到 catalog.js（大屏页也要用 buildDefaultProject，不能依赖本文件） */
 
 let spaceHeld = false;
 let shiftHeld = false;        // 画墙 / 拖墙端点时按住 = 正交锁定

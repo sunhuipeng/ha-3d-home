@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HA 3D Home · 大屏</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/style.css?v=11">
+<link rel="stylesheet" href="/style.css?v=12">
 <style>
   body { background: #eef1f4; }
   #stage { position: fixed; inset: 0; background: #fafbfd; }
@@ -13,6 +13,8 @@
   .d-hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
   .d-top { position: absolute; left: 28px; top: 24px; color: #1f2733; }
   .d-title { font-size: 26px; font-weight: 700; display: flex; align-items: baseline; gap: 14px; }
+  /* 版本号胶囊在大标题里垂直居中、字号回落，别跟着 26px 走 */
+  .d-title .tb-ver { align-self: center; font-size: 12px; font-weight: 400; opacity: .75; }
   .d-edit { font-size: 12px; font-weight: 500; color: #2456c4; text-decoration: none; padding: 3px 8px; border-radius: 7px; background: transparent; border: 1px solid transparent; opacity: .75; pointer-events: auto; transition: all .15s; }
   .d-edit:hover { background: rgba(36,86,196,.08); color: #1b47a8; opacity: 1; }
   .d-temp { font-size: 26px; color: #e8842c; }
@@ -109,7 +111,7 @@
   <div class="d-hud" v-if="project && project.floors.length">
     <div class="d-top">
       <div class="d-title">
-        🏠 {{ project.name }}<a class="d-edit" href="/index.html" title="打开编辑器修改户型">编辑 ↗</a><span class="d-temp">{{ hudTemp }}</span>
+        🏠 {{ project.name }}<a class="d-edit" href="/index.html" title="打开编辑器修改户型">编辑 ↗</a><span class="d-temp">{{ hudTemp }}</span><span class="tb-ver" data-app-version hidden></span>
       </div>
       <div class="d-subs"><span v-for="s in hudSubs" :key="s">{{ s }}</span></div>
     </div>
@@ -191,10 +193,12 @@
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/js/ha.js?v=5"></script>
-<script src="/js/catalog.js?v=11"></script>
+<script src="/js/catalog.js?v=12"></script>
 <script src="/js/plugins.js?v=26"></script>
 <script src="/js/view3d.js?v=18"></script>
 <script src="/js/hud.js?v=1"></script>
-<script src="/js/display.js?v=8"></script>
+<script src="/js/display.js?v=13"></script>
+<!-- 顶栏版本号（含延迟渲染的大屏标题，见 version.js 头部说明） -->
+<script src="/js/version.js"></script>
 </body>
 </html>

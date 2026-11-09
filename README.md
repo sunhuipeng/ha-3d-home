@@ -47,7 +47,7 @@
 ```
 浏览器 ──WebSocket直连──> Home Assistant (:8123/api/websocket)   实时状态 + 控制
    │
-   └──HTTP──> 本服务 (Node, 零npm依赖)                            静态页面 + 配置/项目存储 + REST兜底
+   └──HTTP──> 本服务 (Node, 零npm依赖)                            静态页面 + 配置/项目存储 + HA 连接测试
                  ├─ /data      config.json · project.json · refimg.*（2D 参考底图）
                  └─ /app/assets 内置家具模型与插件（镜像内，只读）
 ```
@@ -196,15 +196,34 @@ node server/index.js   # 零依赖，无需 npm install；端口默认 8077（PO
 # 打开 http://localhost:8077
 ```
 
+> **应用版本号**：唯一出处是根目录 `package.json` 的 `version`。服务端 `GET /api/version`
+> 每次请求都重新读文件（不用 `require` 缓存），前端 `public/js/version.js` 自动填充带
+> `data-app-version` 的占位，页面里不写死任何版本号。`npm run push:image` 自动升版后
+> **刷新页面即更新，连服务都不用重启**。编辑页在页面左下角（2D/3D 常驻），大屏页在标题右侧，
+> 两处共用同一份数据、同一个填充脚本。
+
+> **大屏旋转锚点**：默认 = 房屋中心（`View3D.center`，按户型包围盒实时算），长按 3D 画面可改，
+> 「◎ 重置锚点」回到默认。锚点存服务端 `data/project.json` 的 `settings.anchors`（按楼层 id）：
+> `GET /api/project` 随项目下发、`PUT /api/anchor` 局部更新，因此跨设备 / 跨浏览器一致。
+> 专用接口只合并 `settings.anchors` 一个字段，不会整份覆盖编辑页保存的户型；编辑页整份保存时
+> 服务端也会以磁盘上的锚点为准，不被旧快照抹掉。服务端不可用或没有记录时退到前端
+> `localStorage`，**两边都没有、或数据损坏时一定回房屋中心**。取景记忆与锚点的本地键同为
+> 楼层 id（`ha3d.displayCam.<id>` / `ha3d.displayAnchor.<id>`），与服务端口径一致；旧版按楼层
+> 索引的 `...f0` / `...f1` 键不再读写（残留可在浏览器 DevTools 手动清理）。
+> 改了 `server/*.js` 记得重启服务。
+
 ## 目录
 
 ```
 server/            后端（零 npm 依赖，只用 Node 内置模块）
-  index.js         入口：启动 + 路由表 + HA REST 兜底代理
-  core.js          目录常量 / 日志 / data 持久化（连接配置、安装密钥、户型项目）
-  assets.js        HTTP 工具、静态托管与缓存、家具目录合并、2D 参考底图
-  plugins.js       插件清单扫描 + zip 安装（按 kind 分流插件/家具，自带最小 zip 解析）
+  index.js         入口：启动 + 按域拆分的路由表（system / config / assets / install / project）
+  core.js          目录常量 / 日志 / data 持久化（连接配置、安装密钥、户型项目、锚点）
+  http-utils.js    JSON 响应 + 请求体读取（统一大小上限，超限回 413）
+  ha.js            HA 连接测试（实时状态由浏览器直连 WS，本服务不代理 /api/states 等）
+  assets.js        静态托管与缓存（HTML no-store、带 ?v= 资源 immutable）、家具目录合并、2D 参考底图
+  plugins.js       插件清单扫描 + zip 安装（按 kind 分流插件/家具，自带最小 zip 解析 + 解压预算）
   catalog-import.js 家具包（kind: catalog）清单校验、安装到 custom/models/<项目id>/、目录扫描
+  atomic-dir.js    安装包落盘的公共原子替换（插件包与家具包共用，失败回滚）
 public/            前端（编辑器 / 3D / HA 客户端，交互逻辑全在前端）
   index.html       编辑器（2D 户型 + 3D 预览 + 面板）
   display.html     大屏展示页（只读 + 场景执行 + 快捷设备）

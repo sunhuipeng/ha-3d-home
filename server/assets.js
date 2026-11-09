@@ -1,6 +1,6 @@
 /*
- * 资源层：HTTP 小工具（JSON 响应/请求体读取/静态托管）+ 家具目录合并 + 2D 参考底图。
- * 三者都和「文件怎么发出去」有关，放一起便于一处调整缓存与路径规则。
+ * 资源层：静态托管（含缓存策略）+ 家具目录合并 + 2D 参考底图。
+ * 三者都和「文件怎么发出去 / 磁盘资产怎么读」有关；HTTP 小工具已拆到 http-utils.js。
  */
 'use strict';
 
@@ -16,43 +16,6 @@ const MIME = {
   '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json',
 };
 
-/* ---------------- HTTP 小工具 ---------------- */
-function sendJSON(res, code, obj) {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(obj));
-}
-
-/* 读 JSON 请求体（解析失败回 null，由调用端判断） */
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = []; let size = 0;
-    req.on('data', (c) => { size += c.length; if (size > 20 * 1024 * 1024) { reject(new Error('请求体过大')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => {
-      if (!chunks.length) return resolve(null);
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (e) { resolve(null); }
-    });
-    req.on('error', reject);
-  });
-}
-
-/* 读原始字节（上传 zip 用：要的就是二进制，不能走 JSON 解析）。
- * 超限后不再缓存数据但继续读流，保证还能回一个正常的 JSON 错误。 */
-function readRawBody(req, limit) {
-  return new Promise((resolve, reject) => {
-    const chunks = []; let size = 0; let over = false;
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > limit) { over = true; return; }
-      chunks.push(c);
-    });
-    req.on('end', () => {
-      if (over) return reject(new Error('安装包过大（上限 ' + Math.round(limit / 1048576) + 'MB）'));
-      resolve(Buffer.concat(chunks));
-    });
-    req.on('error', reject);
-  });
-}
-
 /* 静态文件托管（public / assets / custom 三个根目录）。
  * 缓存策略:
  *   1. 带 ?v= 版本号（js/css，前端改动必升版本号）→ 一年长缓存 immutable，不再请求
@@ -64,7 +27,13 @@ function serveStatic(req, res, u) {
   const p = u.pathname;
   let file = p === '/' ? '/index.html' : p === '/display' || p === '/display/' ? '/display.html' : p;
   try { file = decodeURIComponent(file); } catch (e) { /* 非法编码按原样处理 */ }
-  file = path.normalize(file).replace(/^(\.\.[/\\])+/, '');
+  /* 归一化一律用正斜杠，不能用 path.normalize：
+   * Windows 上 path.normalize('/assets/x') 会得到 '\\assets\\x'，下面的
+   * startsWith('/assets/') / '/custom/' 判断就永远不成立，所有 assets/ 与 custom/
+   * 下的资源（插件 plugin.js、家具 GLB、catalog.json）都会落到 PUBLIC_DIR 而 404。
+   * 同时把反斜杠先折成斜杠，避免编码过的 %5C 绕过前缀判断。 */
+  file = file.replace(/\\/g, '/');
+  file = path.posix.normalize(file).replace(/^(\.\.\/)+/, '');
 
   let baseDir = PUBLIC_DIR;
   let full = path.join(baseDir, file);
@@ -83,8 +52,19 @@ function serveStatic(req, res, u) {
     fs.readFile(full, (err, buf) => {
       if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('404 Not Found'); }
       const ext = path.extname(full).toLowerCase();
+      const isHtml = ext === '.html';
       const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
-      if (u.searchParams.has('v')) {
+      let body = buf;
+      // 生产模式: 关闭前端调试日志（plugins.js / ha.js 读取 window.__HA_DBG）
+      if (IS_PROD && isHtml) {
+        body = Buffer.from(buf.toString('utf8').replace('</head>', '<script>window.__HA_DBG=false;</script></head>'), 'utf8');
+      }
+      /* HTML 一律不缓存：① 带 ?v= 的 HTML 若吃 immutable，改页面就得改版本号；
+       * ② 生产模式往 HTML 注入了 __HA_DBG，按原文件 mtime/size 算的 ETag 反映不出
+       *    NODE_ENV 切换，会 304 返回另一种模式的旧页面。按设计 HTML 本就该即时生效。 */
+      if (isHtml) {
+        headers['Cache-Control'] = 'no-store';
+      } else if (u.searchParams.has('v')) {
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
       } else if (!serr && st) {
         const etag = 'W/"' + st.size + '-' + Number(st.mtimeMs) + '"';
@@ -96,11 +76,6 @@ function serveStatic(req, res, u) {
         headers['ETag'] = etag;
       } else {
         headers['Cache-Control'] = 'no-cache';
-      }
-      let body = buf;
-      // 生产模式: 关闭前端调试日志（plugins.js / ha.js 读取 window.__HA_DBG）
-      if (IS_PROD && ext === '.html') {
-        body = Buffer.from(buf.toString('utf8').replace('</head>', '<script>window.__HA_DBG=false;</script></head>'), 'utf8');
       }
       res.writeHead(200, headers);
       res.end(body);
@@ -199,7 +174,4 @@ function serveRefImg(res) {
   return res.end('404 Not Found');
 }
 
-module.exports = {
-  MIME, sendJSON, readBody, readRawBody, serveStatic,
-  buildCatalog, saveRefImg, serveRefImg,
-};
+module.exports = { MIME, serveStatic, buildCatalog, saveRefImg, serveRefImg };

@@ -1,6 +1,6 @@
 {
   "name": "ha-3d-home",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "description": "轻量级 Home Assistant 3D 全屋智能可视化：户型绘制 / 家具摆放 / 设备绑定 / 3D 实时展示",

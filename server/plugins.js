@@ -26,8 +26,13 @@ const path = require('path');
 const zlib = require('zlib');
 const { ASSET_DIR, CUSTOM_DIR, log } = require('./core');
 const { installCatalogPackage } = require('./catalog-import');
+const { atomicDirReplace } = require('./atomic-dir');
 
 const INSTALL_MAX_BYTES = 64 * 1024 * 1024;   // 单个安装包上限（插件包与家具包同一口径）
+/* 解压预算：压缩包本身 ≤64MB，但 deflate 可以把几十 KB 撑成几十 GB（zip bomb）。
+ * 单条目与整包都设上限，zlib 的 maxOutputLength 会在超限当场抛错，不会先分配内存。 */
+const UNZIP_MAX_ENTRY = 64 * 1024 * 1024;
+const UNZIP_MAX_TOTAL = 128 * 1024 * 1024;
 
 /* 插件 id（目录名）字符集 */
 const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
@@ -52,7 +57,7 @@ function unzipEntries(buf) {
   if (cdOff >= buf.length) throw new Error('zip 中央目录位置越界');
 
   const out = [];
-  let p = cdOff;
+  let p = cdOff, total = 0;
   for (let i = 0; i < count; i++) {
     if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw new Error('zip 条目损坏');
     const method = buf.readUInt16LE(p + 10);
@@ -70,12 +75,16 @@ function unzipEntries(buf) {
     /* 本地头里的文件名/扩展区长度可能与中央目录不同，必须按本地头算数据起点 */
     const start = lho + 30 + buf.readUInt16LE(lho + 26) + buf.readUInt16LE(lho + 28);
     const data = buf.slice(start, start + compSize);
+    /* 先看中央目录声明的原始长度，明显超标就没必要解压了 */
+    if (rawSize > UNZIP_MAX_ENTRY) throw new Error('zip 条目解压后过大: ' + name);
 
     let content;
     if (method === 0) content = data;
-    else if (method === 8) content = zlib.inflateRawSync(data);
+    else if (method === 8) content = zlib.inflateRawSync(data, { maxOutputLength: UNZIP_MAX_ENTRY });
     else throw new Error('不支持的压缩方式(' + method + '): ' + name);
     if (rawSize && content.length !== rawSize) throw new Error('解压长度校验失败: ' + name);
+    total += content.length;
+    if (total > UNZIP_MAX_TOTAL) throw new Error('安装包解压后体积过大（上限 ' + Math.round(UNZIP_MAX_TOTAL / 1048576) + 'MB）');
     out.push({ name, data: content });
   }
   return out;
@@ -157,7 +166,7 @@ function detectKind(files) {
  * requireId 有值时强制 manifest.id 与它一致（远程安装按 URL 里的 id 定位，只走插件包）；
  * 为 null 时直接采用包内清单的 id（编辑页导入）。
  * 成功返回结果对象（带回 kind 字段）；失败抛 { status, message }，由路由转成 JSON 错误。 */
-async function installPackage(zipBuf, requireId) {
+function installPackage(zipBuf, requireId) {
   const fail = (status, msg) => { throw Object.assign(new Error(msg), { status }); };
   if (!zipBuf || !zipBuf.length) fail(400, '请求体为空：需要用 Content-Type: application/zip 发送安装包');
 
@@ -252,35 +261,15 @@ function installPluginPackage(all, requireId) {
   }
   const version = String(manifest.version || '');
 
-  /* 原子替换：写临时目录 → 旧目录改名备份 → 新目录上位 → 删备份；任何一步失败都回滚。
-   * 所以重复导入同一插件 = 原地覆盖升级，不会留下半套文件。 */
-  const pluginsDir = path.join(CUSTOM_DIR, 'plugins');
-  const target = path.join(pluginsDir, id);
-  const stamp = Date.now();
-  const tmp = path.join(pluginsDir, '.install-' + id + '-' + stamp);
-  const backup = path.join(pluginsDir, '.old-' + id + '-' + stamp);
-  let upgraded = false;
-  try {
-    /* models/ 不预先建：只有包里真的带模型时才由下面的写文件循环建出来。
-     * 原先无条件 mkdir 会让「没有 glb 的插件」装完也留一个空 models 目录
-     * （custom/plugins/<id>/models 空的，看着像模型丢了） */
+  /* 原子替换收敛在 atomic-dir.js（与家具包共用一套）；错误自带 status，直接冒泡给路由。
+   * models/ 不预先建：只有包里真的带模型时下面的写文件循环才建出来，
+   * 免得「没有 glb 的插件」装完留一个空目录看着像模型丢了。 */
+  const { upgraded } = atomicDirReplace(path.join(CUSTOM_DIR, 'plugins'), id, (tmp) => {
     for (const [name, data] of files) {
       fs.mkdirSync(path.dirname(path.join(tmp, name)), { recursive: true });
       fs.writeFileSync(path.join(tmp, name), data);
     }
-    upgraded = fs.existsSync(target);
-    if (upgraded) fs.renameSync(target, backup);
-    try {
-      fs.renameSync(tmp, target);
-    } catch (e) {
-      if (upgraded) fs.renameSync(backup, target);   // 上位失败：把旧版本放回去
-      throw e;
-    }
-    if (upgraded) fs.rmSync(backup, { recursive: true, force: true });
-  } catch (e) {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e2) { /* ignore */ }
-    fail(500, '写入插件目录失败: ' + e.message);
-  }
+  }, '插件');
 
   log('[ha-3d-home] 插件已' + (upgraded ? '升级' : '安装') + ':', id, version || '(无版本)', '文件', files.size, '个');
   return {

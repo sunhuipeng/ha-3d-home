@@ -27,6 +27,12 @@
  */
 'use strict';
 
+/* 全局唯一 id 生成：编辑页与大屏页都会调 newFloor() / buildDefaultProject()。
+ * 以前定义在 editor.js，而大屏页并不引入 editor.js —— 项目文件缺失走到示例户型
+ * 时会直接 ReferenceError 整页崩。下沉到两页共用的 catalog.js。 */
+let _uidCounter = 0;
+function uid() { return 'i' + Date.now().toString(36) + (++_uidCounter).toString(36); }
+
 /* 家具类型（左侧库分类页签）
  * **唯一出处是 assets/catalog.json 的 types**，由 /api/catalog 的 types 字段下发，loadCatalog()
  * 时填进这里 —— 前端不再单独维护一份类型表。服务端（server/catalog-import.js）校验家具包的

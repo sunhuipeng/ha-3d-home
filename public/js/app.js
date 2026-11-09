@@ -483,8 +483,11 @@ const AppComponent = {
 
       // 关闭页面前确保已保存
       window.addEventListener('beforeunload', () => {
-        if (this.savedState !== '已保存' && this.project) {
-          navigator.sendBeacon('/api/project', new Blob([JSON.stringify(this.project)], { type: 'application/json' }));
+        if (this.savedState !== '已保存' && this.project && navigator.sendBeacon) {
+          /* 与手动保存 / autoSave 走同一份 serializeProject 快照：原始 this.project
+           * 可能带着过期的 anchors 等运行期字段，整份提交会干扰服务端 disk 优先的合并。 */
+          navigator.sendBeacon('/api/project',
+            new Blob([JSON.stringify(serializeProject(this.project))], { type: 'application/json' }));
         }
       });
 

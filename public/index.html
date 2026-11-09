@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HA 3D Home · 编辑</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/style.css?v=11">
+<link rel="stylesheet" href="/style.css?v=12">
 <style>
   /* 启动图: 覆盖 JS/CSS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
   #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
@@ -14,6 +14,9 @@
   #boot .b-spin { width: 30px; height: 30px; border: 3px solid #d7deea; border-top-color: #3b82f6; border-radius: 50%; animation: b-rot .8s linear infinite; }
   #boot .b-tip { font-size: 12px; color: #8a94a6; }
   @keyframes b-rot { to { transform: rotate(360deg); } }
+  /* 编辑页版本号：固定在页面左下角（左侧工具栏底部），2D/3D 模式都常驻。
+     只用定位修饰 .tb-ver-corner，基础胶囊样式仍在 style.css，大屏页标题旁的版本号不受影响。 */
+  .tb-ver-corner { position: fixed; left: 10px; bottom: 10px; z-index: 25; }
 </style>
 <script>
   // 由 app.js / display.js 在 Vue 挂载完成后调用；12s 兜底防止脚本异常时卡死在启动图
@@ -555,17 +558,23 @@
 
 </div>
 
+<!-- 左下角版本号：放在 Vue 挂载容器 #app 之外，不受 v-cloak / v-if 影响；2D 与 3D 模式都常驻。
+     文字由 /js/version.js 从 /api/version 填充（唯一出处 package.json），这里不写死版本号。 -->
+<span class="tb-ver tb-ver-corner" data-app-version hidden></span>
+
 <script src="/vendor/three.min.js"></script>
 <script src="/vendor/OrbitControls.js"></script>
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/js/ha.js?v=5"></script>
-<script src="/js/catalog.js?v=11"></script>
+<script src="/js/catalog.js?v=12"></script>
 <script src="/js/hud.js?v=1"></script>
-<script src="/js/editor.js?v=14"></script>
+<script src="/js/editor.js?v=15"></script>
 <script src="/js/recode.js?v=3"></script>
 <script src="/js/plugins.js?v=26"></script>
 <script src="/js/view3d.js?v=18"></script>
-<script src="/js/app.js?v=28"></script>
+<script src="/js/app.js?v=29"></script>
+<!-- 版本号：必须在 Vue 主脚本之后（见 version.js 头部说明） -->
+<script src="/js/version.js"></script>
 </body>
 </html>

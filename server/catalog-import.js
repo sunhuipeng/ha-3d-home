@@ -35,6 +35,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ASSET_DIR, CUSTOM_DIR, log } = require('./core');
+const { atomicDirReplace } = require('./atomic-dir');
 
 /* 目录名 = 项目 id：小写字母/数字开头，字母/数字/_ . -，最长 64 */
 const PACK_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
@@ -324,27 +325,12 @@ function installCatalogPackage(files, expectedId) {
       + '安装接口按 id 定位 custom/models/<id>/，请重新导出这个项目的家具包再发布');
   }
 
-  const modelsDir = path.join(CUSTOM_DIR, 'models');
-  fs.mkdirSync(modelsDir, { recursive: true });
-  const target = path.join(modelsDir, pack.id);
-  const stamp = Date.now();
-  const tmp = path.join(modelsDir, '.install-' + pack.id + '-' + stamp);
-  const backup = path.join(modelsDir, '.old-' + pack.id + '-' + stamp);
-  let upgraded = false;
-  try {
-    /* 先整个写进临时目录，再原子换位：中途失败不会留下半套家具 */
+  /* 原子替换收敛在 atomic-dir.js（与插件包共用一套）；失败时错误自带 status，直接冒泡 */
+  const { upgraded } = atomicDirReplace(path.join(CUSTOM_DIR, 'models'), pack.id, (tmp) => {
     fs.mkdirSync(tmp, { recursive: true });
     fs.writeFileSync(path.join(tmp, 'item.json'), jn.data);
     for (const g of glbEntries.values()) fs.writeFileSync(path.join(tmp, g.base), g.data);
-    upgraded = fs.existsSync(target);
-    if (upgraded) fs.renameSync(target, backup);          // 旧版本先挪开
-    try { fs.renameSync(tmp, target); }
-    catch (e) { if (upgraded) fs.renameSync(backup, target); throw e; }
-  } catch (e) {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e2) { /* ignore */ }
-    bad('写入家具目录失败: ' + e.message, 500);
-  }
-  if (upgraded) { try { fs.rmSync(backup, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
+  }, '家具');
 
   const baseUrl = '/custom/models/' + encodeURIComponent(pack.id) + '/';
   const items = pack.items.map((it) => toCatalogItem(pack.id, it, baseUrl));
