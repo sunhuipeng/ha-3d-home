@@ -307,11 +307,12 @@ styles: [
 
 ### 2.2.1 样式参数 `styles[].options`
 
-> **背景插件保留键**：`offsetX`（东西）/ `offsetZ`（南北）—— 表示**房屋在背景画面中偏离中心多少米**
-> （默认 0 = 房屋落在背景中心，钳制 ±60）。引擎会把它算进 `ctx.house` / `ctx.safe`，
-> 所以插件里 `house.cx / cy` 就是房屋相对背景中心的偏移、`safe.allowed()` 也已经带上偏移；
-> 方向仍是统一手感：滑块「往右拖 = 背景 往左/往上」，即 +X = 房屋相对偏东、+Z = 房屋相对偏南。
-> 声明这两个参数，右侧面板就会出现偏移滑条。内置背景插件已全部带上（`bgKit.offsetOpts()` 可复用）。
+> **背景插件保留键（位置参数组）**：`offsetX`（东西）/ `offsetZ`（南北）/ `houseY`（离地高度）
+>
+> - `offsetX` / `offsetZ`：房屋在背景画面中偏离中心多少米（默认 0，钳制 ±60）。引擎把它算进 `ctx.house` / `ctx.safe`，所以 `house.cx / cy` 就是偏移、`safe.allowed()` 已带偏移。方向仍是统一手感：滑块「往右拖 = 背景 往左/往上」，即 +X = 房屋相对偏东、+Z = 房屋相对偏南。
+> - `houseY`：**房屋地板相对背景基准面 `y = 0` 的高度（米）**，默认 0，范围 −10 ~ 30，可为负。正值 = 房屋悬空 / 建在山顶平台，负值 = 房屋在低洼 / 下沉庭院。引擎读它把**整栋房屋**（`View3D.root`）抬到 `y = houseY`，设备 / 家具 / 门窗的高度仍相对房屋、实例数据不写这个值；同一个值也交给插件（`ctx.options.houseY`、`ctx.house.y`、`ctx.safe.houseY`），插件据此在 `y = houseY` 画脚下平台或挖坑。
+>
+> 三条滑条由 `bgKit.positionOpts(xzRange?, houseYDef?)` 一次生成（`bgKit.offsetOpts()` 是旧版两条，仍兼容）。值按 `<插件id>:<背景id>` 存在 `project.settings.backgroundOptions`，**每个背景样式各自一份**：给「山顶」样式设 `def: 6`、给「低洼」样式设 `def: -3`，切换样式时房屋自动升降。内置背景插件已全部带上。
 
 
 同一种造型的**差异项**用 `options` 表达，不必为每种差异另开一个造型。典型例子是门：一个「单开门」样式再分左/右开门、内/外开，四种画法共用一份造型和一份代码。
@@ -912,11 +913,12 @@ PluginEngine.register({
 |---|---|---|
 | `ctx.THREE` | 命名空间 | 同上，不要另引 CDN |
 | `ctx.size` | number | 参考画布边长（512）；实际一般自定更大尺寸（如 2048）铺整块地面 |
-| `ctx.plane(src, sizeM?)` | 函数 | **地面网格工厂**：传入 canvas 或 THREE.Texture，返回贴好图的 120m 平面网格（已摆正 / **中心对准背景中心** / 防闪面），`add` 进 group 即用；`sizeM` 可选自定义尺寸（米） |
+| `ctx.plane(src, sizeM?, hole?)` | 函数 | **地面网格工厂**：传入 canvas 或 THREE.Texture，返回贴好图的 120m 平面网格（已摆正 / **中心对准背景中心** / 防闪面），`add` 进 group 即用；`sizeM` 可选自定义尺寸（米）。`houseY < 0`（低洼）时整张地面会横穿房屋，可传第三个参数 `hole = { x0, x1, z0, z1 }`（背景坐标系，米）挖一个矩形洞，引擎用「回」字形四块平面拼出带洞地面、四块共享同一张贴图按整图 UV 取样；挖不挖洞、坑壁画什么都由插件决定 |
 | `ctx.planeSize` | number | 默认平面边长（米），≥120；偏移把房子推到边缘时会自动放大。画布 ↔ 米 换算用得上 |
-| `ctx.house` | object | 背景坐标系里的房屋包围盒，见 4.4 |
-| `ctx.safe` | object | 安全边界（禁放区 + 可布置范围），坐标系同上，见 4.4 |
-| `ctx.options` | object | 用户参数值，**已合并默认值**，直接 `ctx.options.repeat` |
+| `ctx.house` | object | 背景坐标系里的房屋包围盒，见 4.4（含 `y` / `h` / `topY` 高度信息） |
+| `ctx.safe` | object | 安全边界（禁放区 + 可布置范围 + 高度信息），坐标系同上，见 4.4 |
+| `ctx.options` | object | 用户参数值，**已合并默认值**，直接 `ctx.options.houseY` |
+| `ctx.houseY` | number | 与 `ctx.options.houseY` / `ctx.house.y` 同一个值（米），插件随手可取 |
 | `ctx.refresh` | number | 声明的刷新率（Hz），只读参考 |
 
 ### 4.4 `house` 与 `safe`
@@ -925,7 +927,7 @@ PluginEngine.register({
 > 房屋可以通过样式参数 `offsetX / offsetZ` 偏离背景中心，所以 `house.cx / cy` 就是那个偏移量
 > （0 / 0 = 房屋正落在画面中心）。`safe` 与 `house` 同一套坐标，已含偏移。
 
-`house` 是所有楼层墙体的并集（米）：
+`house` 是**当前楼层**墙体的包围盒（该层没画墙时回退全屋并集，米）：
 
 | 字段 | 含义 |
 |---|---|
@@ -934,7 +936,23 @@ PluginEngine.register({
 | `w` / `d` | 东西宽 / 南北深 |
 | `cx` / `cy` | 房屋中心在背景坐标系里的位置 = 偏移量（米） |
 | `floors` | 有墙的楼层数 |
-| `hash` | 尺寸指纹。变了引擎会自动重放背景；也可以当随机种子（`const K = PluginEngine.bgKit; K.rand(K.seed(house.hash))`），保证同一栋房子草的位置一致 |
+| `y` | **房屋地板高度** = 样式参数 `houseY`（米，可为负）；插件画脚下平台用它 |
+| `h` | **房屋实体高度**（米）：home 取当前楼层层高，studio 取预览的「房屋高度」 |
+| `topY` | 屋顶高度 = `y + h` |
+| `hash` | 尺寸指纹（`minX/maxX/minY/maxY`）。变了引擎会自动重放背景；也可以当随机种子（`const K = PluginEngine.bgKit; K.rand(K.seed(house.hash))`），保证同一栋房子草的位置一致 |
+
+> `y / h / topY` 只是**数据**，不改变任何水平方向的字段或判定。
+
+**重放时机（引擎负责，插件不要自己通知）**：切换楼层、拖墙改包围盒、改层高、切换背景、改样式参数都会重新执行一次 `apply(ctx)` 并换掉整个 `group`。引擎用一份「构图指纹」判定是否需要重放：
+
+```text
+楼层号 | house.hash | house.h | 背景样式 id | offsetX | offsetZ | houseY
+```
+
+切层是**立即重放**（背景必须跟着当前楼层重新构图，否则房屋会画到上一层的平台外面，哪怕两层户型完全一样）；同一层内改墙 / 改层高 / 改参数走 160ms 防抖。**指纹只在重放成功后才提交**：插件尚未加载完、`apply()` 抛错或没返回 `group` 时引擎会清空背景并保留旧指纹，随后每 300ms 自动重试（最多 3 次），下一次重建也会补试 —— 不会出现「背景空白后再也画不回来」。非 `build` 触发的绘制入口（切换背景、调参数、页面初始化）会先取消挂起的防抖/重试重放并对准当前楼层的 `house`，避免双重建销或按默认 8×8 户型错画。因此：
+
+- 平台、山体、庭院、撒点等**任何按房屋尺寸摆的几何体都要在 `apply()` 里现算**（读 `house.w / d / minX…`），不要写死 15×15 这种常量，也不要把 `house` 缓存到模块级变量；
+- `apply()` 每次拿到的都是全新 `ctx` / `group`，`onData` 的 `overlayGroup` 也随 `group` 一起重建，别跨回调缓存 mesh 引用。
 
 `safe`（房屋外扩形成的禁放走廊，坐标同 `house`）：
 
@@ -945,6 +963,34 @@ PluginEngine.register({
 | `x0` / `x1` / `y0` / `y1` | 禁放矩形（已含 inner 外扩） |
 | `forbidden(x, z)` | 是否落在禁放区 |
 | `allowed(x, z)` | 是否在可布置环带内（禁放区外且半径内） |
+| `houseY` / `baseY` | **高度信息**：房屋地板高度（= `house.y`，米，可为负） |
+| `houseH` | **高度信息**：房屋实体高度（米） |
+| `topY` | **高度信息**：屋顶高度 = `houseY + houseH` |
+
+> **水平方向一字未动**：`forbidden(x, z)` / `allowed(x, z)` 仍是原来的两参 2D 判定，`inner / outer / x0 / x1 / y0 / y1` 含义不变（`y0/y1` 里的 y 是平面坐标 = 3D 的 z，不是高度）。新增的高度字段只是**给插件判断用的数值**，引擎不据此改变禁放行为。
+> 房屋悬空时想在房子底下画支撑柱 / 洞穴 / 云，插件自己比较 `y < safe.houseY` 并主动绕开 `allowed(x, z)`（它仍会把房屋的水平投影判为禁放）——**画什么、怎么画完全交给插件**：
+
+```js
+const H = ctx.options.houseY || 0;
+if (H > 0) {
+  // 房屋悬空：在占地四角画支撑柱，从 y=0 一直到 y=H
+  [[ctx.house.minX, ctx.house.minY], /* …另三个角… */].forEach(([x, z]) => {
+    const p = new ctx.THREE.Mesh(
+      new ctx.THREE.CylinderGeometry(0.4, 0.5, H, 8),
+      new ctx.THREE.MeshLambertMaterial({ color: 0x8a7a66 })
+    );
+    p.position.set(x, H / 2, z);
+    g.add(p);
+  });
+}
+if (H < 0) {
+  // 房屋在下沉庭院：地面挖洞，自己补坑壁与坑底（房子地板在 y=H）
+  g.add(ctx.plane(cv, null, {
+    x0: ctx.house.minX - 1.5, x1: ctx.house.maxX + 1.5,
+    z0: ctx.house.minY - 1.5, z1: ctx.house.maxY + 1.5,
+  }));
+}
+```
 
 ### 4.5 `apply` 的返回值 —— 统一返回一个 3D 模型
 
@@ -994,6 +1040,37 @@ apply(ctx) {
 | `group` | `THREE.Group` | 整块地面的 3D 模型（扁平 / 立体都是它） |
 | `refresh` | number | 覆盖条目上的刷新率 |
 | `update` | `(t, api) => void` | 动态背景的定时回调（按 `refresh` 的 Hz 节流，`api` = `{ group, mesh, size }`）；改了贴图自己标脏 `tex.needsUpdate = true` |
+| `houseY` | number | **仅兜底**：样式完全没声明 `houseY` 参数时，用它抬升房屋并回填 `ctx` / `house` / `safe` 的高度数值。只要声明了参数就以参数为准 —— `ctx` 在 `apply` 之前构造，返回值不能反过来覆盖用户滑杆；想让高度可调、且 `apply` 里能读到，请务必写进 `options` |
+
+> **立体背景示例（山顶平台）**：`houseY` 的默认高度由样式参数声明，插件按同一个值画平台；
+> 背景 group 的 `y` 恒为 0，山脚 / 河流 / 稻田留在基准面，房屋由引擎抬到 `y = H` 站在平台上。
+> ⚠ **所有水平面都要留间隙**：地面 `−0.05` → 山体顶面 `H − 2G` → 平台顶面 `H − G` → 房屋地板 `H`，
+> `G = 0.25m`。让平台顶面和房屋地板落在同一个 `H` 是最常见的翻车原因：两个共面平面会整片条纹闪烁。
+
+```js
+{ id: 'hill', name: '山顶平台', icon: '⛰',
+  options: [...PluginEngine.bgKit.positionOpts(30, 6)],   // houseY 默认 6 米
+  apply(ctx) {
+    const T = ctx.THREE, h = ctx.house, H = ctx.options.houseY || 0;
+    const G = 0.25;                                       // 水平面最小间隙（米）
+    const g = new T.Group();
+    g.add(ctx.plane(myGroundCanvas));                     // 山脚地面（y=-0.05）
+    const mountTop = Math.max(0.5, H - 2 * G);
+    const m = new T.Mesh(
+      new T.CylinderGeometry(11, 18, mountTop, 4),
+      new T.MeshLambertMaterial({ color: 0x7f9a5b })
+    );
+    m.rotation.y = Math.PI / 4;
+    m.position.set(h.cx, mountTop / 2, h.cy);             // 山体顶面 = H - 2G
+    g.add(m);
+    const platformTop = H - G;                            // 平台顶面 = H - G
+    const top = new T.Mesh(new T.BoxGeometry(15, 0.3, 15),
+      new T.MeshLambertMaterial({ color: 0x9bb87a }));
+    top.position.set(h.cx, platformTop - 0.15, h.cy);    // 底面嵌进山体，不与山体顶面共面
+    g.add(top);
+    return { group: g };
+  } },
+```
 
 ### 4.6 动态背景与 `api`
 
@@ -1035,6 +1112,17 @@ apply(ctx) {
 
 取值规则（与门窗/设备的**样式参数**共用同一套合并逻辑）：用户存过且非 `null` / `''` 的值优先，否则用 `def` —— 所以 `apply` 里直接 `ctx.options.key` 用，**不用再写 `|| 默认值`**（`0` 和 `false` 也都是合法值）。
 
+三个位置保留键可以直接用工具函数生成（见 2.2.1）：
+
+```js
+options: [
+  ...PluginEngine.bgKit.positionOpts(30, 6),   // offsetX / offsetZ / houseY(默认 6)
+  { key: 'clumps', label: '草丛数量', type: 'range', min: 0, max: 160, step: 10, def: 70 },
+]
+```
+
+改 `houseY` 会立刻重放背景并挪动整栋房屋（90ms 防抖），**不重建户型**；相机与旋转锚点同步跟随，已经调好的取景不会跳。
+
 ```js
 options: [
   { key: 'repeat', label: '颗粒密度', type: 'range', min: 8, max: 40, step: 2, def: 20 },
@@ -1049,6 +1137,10 @@ options: [
 3. **必须返回 `{ group }`**：只返回 canvas / url / texture（没有 group）会被当成没画好，引擎直接清空背景、什么都不显示。
 4. **静态背景不要声明 `refresh`**：静态只在切换背景或房屋尺寸变化时画一次，零每帧开销。
 5. **`onData` 里不要做时间动画**：它只在实体数据变化时被调用，不是每帧。云飘 / 水流 / 太阳沿轨迹移动一律放 `update(t, api)`；`onData` 只决定「现在该不该有太阳 / 下不下雨 / 亮度多少」。
+6. **立体背景里的天空元素要跟着 `houseY` 走**：云、雨滴、太阳、天气牌若写死绝对高度（如 `y = 24`），房屋抬到山顶后就会穿进山体或飘在半空。一律写成 `H + 相对高度`，`H` 从 `ctx.options.houseY` / `api.ctx.house.y` 取。
+7. **`houseY < 0` 时别忘了挖洞**：地面平面固定在 `y = -0.05`，房子沉到基准面以下会被地面盖住。用 `ctx.plane(cv, null, hole)` 挖出房屋占地的洞，再自己补坑壁与坑底。
+8. **高度只加信息、不改水平判定**：`safe.allowed(x, z)` / `forbidden(x, z)` 恒为 2D，房屋悬空时它们仍会把房子底下（水平投影）判为禁放；想在下面画东西就自己读 `safe.houseY` 比较，别指望引擎放行。
+9. **两个平面之间必须留间隙**（立体背景最常见的闪面）：房屋地板顶面 `H`、地台底面 `H − 0.12`、贴图地面 `−0.05`、平台顶面、坑底……任意两个水平面至少错开 **0.2m**，建议统一用常量 `G = 0.25`。让平台顶面 / 山体顶面 / 房屋地板都等于 `H` 会整片出现斜条纹（z-fighting），调材质、开 `polygonOffset` 都只是遮丑。宁可留一条看得见的缝，或用一个竖直矮墙/基座把缝填上（竖直面与水平面不共面）。`ctx.plane(cv, null, hole)` 的四块拼面是严格分割、只共边不重叠，不需要额外留缝。
 
 ### 4.9 动态实体字段 `fields` 与顶层 `onData`（背景专用）
 
@@ -1108,14 +1200,14 @@ PluginEngine.register({
 - `fields`：`{ <字段key>: { entity_id, state, attributes } | null }`。每个声明过的 key 都在表里；**未绑定、实体还没推过来、HA 未连接时为 `null`** —— 首屏很常见，插件必须自己写回退值（例如默认晴天）。`attributes` 里是温度、湿度、单位等，天气的中文映射可参考 `public/js/hud.js` 的 `HUD.weatherState()`。
 - `api`：`{ group, mesh, size, overlayGroup, options, ctx }`。`overlayGroup` 是引擎自动建好、挂在背景 `group` 下的专属子树 —— **把数据驱动的元素都加到这里**，与 `apply` 画的内容物理隔离；背景重放时它随 `group` 一起销毁重建，所以不要跨回调缓存 mesh 引用。`ctx` 就是 `apply(ctx)` 那份（含 `THREE` / `house` / `safe` / `options`）。
 
-**绑定与持久化**：用户在右侧属性面板「**实体绑定 · 背景**」分组里按字段绑定实体（与设备/门窗的实体绑定同款界面：字段名 + 未绑定状态 + 输入框 + tip；可复用项目级 `settings.weatherEntity` 填的 id，但不自动带过来），值存 `project.settings.backgroundFields['<插件id>:<背景id>'] = { 字段key: entityId }`，与 `backgroundOptions` 平级，按背景 id 独立。改绑定只推一次 `onData`，不会重建整个背景。
+**绑定与持久化**：用户在右侧「**背景设置**」面板「**背景 · 实体绑定**」分组里按字段绑定实体（与设备/门窗的实体绑定同款界面：字段名 + 未绑定状态 + 输入框 + tip；可复用项目级 `settings.weatherEntity` 填的 id，但不自动带过来），值存 `project.settings.backgroundFields['<插件id>'] = { 字段key: entityId }`，与 `backgroundOptions` 平级。**绑定是插件级的**：`fields` 声明在插件注册对象顶层，所以同一插件下的所有样式（石板 / 木栈道 / 草原…）共用这**一把 key**、共用同一份实体绑定，切换具体样式不会丢失或需要重绑；设备类插件同理，字段绑定存在实例 `obj[key]` 上，切灯体造型照样保留。只有背景的手工参数 `backgroundOptions` 仍按 `'<插件id>:<样式id>'` 存（各样式默认值可能不同）。读档 `fetchProject` 与写档 `serializeProject` 都会调用 `PluginEngine.migrateProjectBg` 把老版本分散在各样式键里的绑定自动合并成插件键（当前选中样式优先，幂等）。改绑定只推一次 `onData`，不会重建整个背景。
 
 **引擎的调度细节**（写插件时知道即可）：
 
 1. `applyBackground` 挂载成功后立刻补一次 `onData`（首帧，HA 可能还没连上）；
 2. HA 连上推送全量快照时强制再补一次，首屏天气这时才真正到位；
 3. 之后的每次 HA `change`，引擎对所有绑定字段做一次**值快照对比**（`state` + `attributes`），只有真的变了才回调 —— HA 的增量事件不一定带实体 id，所以不能靠事件参数过滤；顺带完成去重；
-4. 背景重放（切换背景 / 改参数 / 房屋尺寸变化）会清掉旧记录并重新走 1，**不会写到已释放对象上**；
+4. 背景重放（切换背景 / 改参数 / 切换楼层 / 房屋尺寸或层高变化）会清掉旧记录并重新走 1，**不会写到已释放对象上**；
 5. 没有 `fields` / `onData` 的老插件完全走原路径，零改动兼容。
 
 **在 studio 里开发调试**：预览引擎实现了同一套契约。项目 `fields` 会自动生成 mock 实体（左下角「预览状态」里可点切换），用 MCP 的 `studio_set_entity` 改状态即可触发 `onData` 并截图验证；`weather` 域的 mock 缺省是 `sunny`。导出/发布的是干净 `plugin.js`，顶层的 `fields` / `onData` 会原样带走。

@@ -14,8 +14,8 @@
 
 ## 功能
 
-- 📐 **2D 户型编辑器**：墙体绘制（0.1m 网格吸附、实时长度）、门/窗、家具库（7 类型 × 任意形态，assets 目录动态扩展）、设备点位
-- 🛋 **家具摆放**：拖拽移动、旋转、调 X/Y/离地高度/整体比例（滑条实时预览 2D + 3D），同一类型可切换不同形态模型（GLB）；内置模型放 `assets/models/` 并在 `assets/catalog.json` 声明，自定义模型可以直接「导入插件」上传 zip（kind: catalog，见 [安装家具包](#家具包)）
+- 📐 **2D 户型编辑器**：墙体绘制（0.1m 网格吸附、实时长度）、门/窗、家具库（8 类 × 任意形态，custom 家具包动态扩展）、设备点位
+- 🛋 **家具摆放**：拖拽移动、旋转、调 X/Y/离地高度/整体比例（滑条实时预览 2D + 3D），同一类型可切换不同形态模型（GLB）。**内置只保留 15 件最小存量模型**（供现有项目 / 示例户型 / Docker 初始项目兼容），新增或替换家具推荐直接「导入插件」上传 `kind: catalog` 的家具包 zip（见 [家具包](#家具包)），落到 `custom/models/<项目id>/`，不用改 `assets/`、不用重建镜像
 - 📡 **对接 Home Assistant**：浏览器**直连** HA WebSocket（`subscribe_entities` 实时推送，零延迟），支持灯光/开关/传感器/空调/窗帘/风扇等实体
 - 🏠 **3D 展示**：Three.js 渲染墙体/门窗/家具/吊灯，灯具开灯发光、彩色灯支持，点击设备直接控制，楼层切换
 - 📊 **实时数据**：天气 HUD（温度/湿度/天气现象）、可配置数据卡片、设备状态标签实时刷新、悬停查看状态
@@ -83,17 +83,22 @@ docker run -d --name ha-3d-home --restart unless-stopped \
 
 内置资产在 `assets/`（直接打进镜像），**用户自定义放 `custom/`，结构与 assets 完全相同**，服务端自动合并，**同名/同 id 时自定义覆盖内置**：
 
+> 🛋 **家具扩展只走 `custom/`**：`assets/models/` 与 `assets/catalog.json` 的 `items` 已精简为 15 件最小存量集
+> （现有 `data/project.json`、新建项目示例户型、Docker 初始项目在用），**只减不增** —— 内置目录随镜像升级会被覆盖。
+> 想要任意多自己的家具，用 studio 做家具项目导出 zip → 编辑器「导入插件」上传，整包落到
+> `custom/models/<项目id>/`（见 [家具包](#家具包)）。`assets/catalog.json` 只保留 `types` 分类枚举供前后端与包校验共用。
+
 ```
 custom/
 ├─ models/        自定义家具模型 *.glb（与内置同 id 同名 → 直接替换该家具模型）
-│  └─ <项目id>/   导入的家具包：一个项目一个文件夹（item.json + 多个 glb，见「家具包」）
+│  └─ <项目id>/   导入的家具包：一个项目一个文件夹（item.json + 多个 glb，见「家具包」）★ 推荐
 ├─ plugins/       自定义插件 <目录>/plugin.json + plugin.js（同插件 id → 覆盖内置插件）
 └─ catalog.json   （可选）自定义家具清单，条目覆盖内置同名 id
 ```
 
 - 本地开发：直接在项目根 `custom/` 下放文件，重启 `node server/index.js` 生效
 - Docker：`-v "$PWD/custom:/custom"` 单独挂载（compose 已配好），升级/重建镜像不丢失
-- 覆盖示例：想换内置的「双人床」模型，只需把新 glb 命名为与内置相同 id 放进 `custom/models/`，清单和代码都不用动
+- 覆盖示例：想换内置的「单人床」模型，把新 glb 命名为 `bed_single.glb` 放进 `custom/models/`，清单和代码都不用动
 - 自己写插件：目录结构 → [assets/plugins/README.md](assets/plugins/README.md)；写代码 → [PLUGIN-DEV.md](PLUGIN-DEV.md)（速览见 [插件开发](#插件开发)）
 
 ## 安装包（zip）：插件与家具共用一个入口
@@ -169,9 +174,13 @@ armchair.glb  想放几件放几件，每件在 items 里各占一条
   - `model` 写包内文件名即可；**省略时包里只能有一个 glb**，多模型必须逐条指明（否则报错列出候选）
   - `icon` 可选（64×64 的 SVG 图元字符串，2D 平面图标，省了只画方块）、`scale` 可选（模型额外缩放）
 - 导入后服务端扫描 `custom/models/<项目id>/` 合并进 `GET /api/catalog`；内置家具仍是
-  `assets/catalog.json` + `assets/models/` 平铺，不受影响
+  `assets/catalog.json` + `assets/models/` 平铺，不受影响 —— 但内置已是 15 件最小存量集，
+  **扩展请只走家具包**，不要往 `assets/models/` 加文件
 - 条目 id 带项目前缀，所以**不会覆盖内置家具**（想接管内置 `sofa` 请改 `custom/catalog.json`）
 - 老格式（一件家具一个目录、目录里放自己的 json + glb）仍然可读，目录名直接当条目 id
+- **能不能完全不用内置模型？** 能。新建项目后把示例户型里的家具删掉，再导入自己的家具包即可；
+  服务端 `GET /api/catalog` 会把内置 15 条与所有家具包条目一起返回，两类可混用、也可只用后者。
+  只有 `assets/catalog.json` 的 `types`（分类枚举）必须保留 —— 它是包校验与前端页签的唯一出处
 
 ## 安装密钥配置（二选一，环境变量优先）
 
@@ -221,19 +230,42 @@ PLUGIN-DEV.md      插件开发手册（通用 ctx 函数表 + 设备/门窗/背
 | 脚本 | 作用 | 用法 |
 |---|---|---|
 | `fix-glb-materials.py` | 检查并修复 GLB 材质问题（见下） | `npm run fix:glb` |
-| `pack-image.sh` | 离线打包镜像：构建 → 导出单个 tar（不依赖镜像仓库），见下方说明 | `npm run pack:image:amd64` |
+| `push-image.sh` | 自动升版 → 构建 arm64 镜像 → 推送到内网仓库 `192.168.31.16:4000/sunhuipeng`，见下方说明 | `npm run push:image` |
 
-### pack-image.sh 离线打包（无镜像仓库）
+### push-image.sh 推送到内网仓库
 
-给没有 registry 的环境用：构建完直接 `docker save` 成一个 tar，拷到目标机 `docker load` 即可。
+当前发布口径：**只推 `linux/arm64`**。每次执行先把 `package.json` 的 `version` 递增一位
+（默认 patch，`1.0.0 → 1.0.1`），然后只推两个 tag：
+
+- `192.168.31.16:4000/sunhuipeng/ha-3d-home:<version>`（版本固定，如 `1.0.2`）
+- `192.168.31.16:4000/sunhuipeng/ha-3d-home:latest`（始终最新，**必推**）
 
 ```bash
-npm run pack:image            # 按本机架构打包
-npm run pack:image:amd64      # 给 x86_64 服务器/NAS（飞牛、群晖等）
-npm run pack:image:arm64      # 给 ARM 设备
+npm run push:image                    # 自动升版 + 只推上面 2 个 tag
+npm run push:image:arm64              # 显式平台，等价
+BUMP=none npm run push:image          # 不升版，沿用当前 version 重推
+BUMP=minor npm run push:image         # 升 minor（1.0.1 → 1.1.0）
+VERSION=2.0.0 npm run push:image      # 手动指定版本号（不自动升版）
 ```
 
-产物为 `dist/ha-3d-home-<version>-<arch>.tar`（约 130-160MB）。**跨架构必须显式指定平台**——Apple Silicon 上直接 build 出的是 arm64 镜像，拿到 x86 机器上会 `exec format error`。目标机导入后，把根目录 `docker-compose.yml` 复制一份并删掉 `build: .` 一行（保留 `image: ha-3d-home:latest`），再 `docker compose up -d`。
+前置条件（换一台机器跑脚本时才需要处理）：
+
+1. 内网仓库是 **HTTP**，Docker 必须把 `192.168.31.16:4000` 加进 `insecure-registries`
+   （Docker Desktop / OrbStack → Settings → Docker Engine → `"insecure-registries": ["192.168.31.16:4000"]` → 重启 Docker）。
+2. 首次推送先 `docker login 192.168.31.16:4000`（凭据存 `~/.docker/config.json`）。
+
+目标机使用：
+
+```bash
+docker pull 192.168.31.16:4000/sunhuipeng/ha-3d-home:latest
+# 或者把 docker-compose.yml 里的 build: . 删掉，image: 换成上面这行完整地址
+docker compose up -d
+```
+
+> 目标机不是 arm64 时会 `exec format error`；确有 x86 需求时显式
+> `bash scripts/push-image.sh linux/amd64` 单独推一个 amd64 tag。
+
+> 不带登录态直接 `curl .../tags/list` 会返回 401；确认上传用 `docker pull <镜像>:<version>` 或仓库页面。
 
 ### fix-glb-materials.py 材质检查与修复
 

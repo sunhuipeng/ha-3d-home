@@ -123,14 +123,15 @@ const AppComponent = {
       }));
     },
     /* 当前背景的「动态实体字段」绑定区（def.fields 声明；值存 settings.backgroundFields）。
-     * 与 bgOptionList 的静态手工参数分开：这里的实体状态变化会回调插件顶层 onData(fields, api)。 */
+     * 与 bgOptionList 的静态手工参数分开：这里的实体状态变化会回调插件顶层 onData(fields, api)。
+     * 绑定按**插件**共用一份：同一插件下切换具体样式不会丢失已绑实体。 */
     bgFieldList() {
       void this.entVersion;   // 插件异步加载完成后重算（loadAll 完成时会 entVersion++）
       void this.bgTick;
       if (!this.bgStyle || !window.PluginEngine || !PluginEngine.ready) return [];
       const bd = PluginEngine.backgroundOf(this.bgStyle);
       if (!bd || !Array.isArray(bd.fields) || !bd.fields.length) return [];
-      const saved = (PluginEngine.bgFields && PluginEngine.bgFields[this.bgStyle]) || {};
+      const saved = PluginEngine.bgBindings(this.bgStyle);
       return bd.fields.filter((f) => f && f.key).map((f) => Object.assign({}, f, {
         value: saved[f.key] || '',
       }));
@@ -240,8 +241,11 @@ const AppComponent = {
         value: saved[o.key] != null && saved[o.key] !== '' ? saved[o.key] : o.def,
       }));
     },
-    /* 选中对象的插件绑定字段（设备/门窗同一套: 按当前样式所属插件取 fields 声明；
-     * 切到没有 fields 的插件样式（如自定义台灯/固定窗）本区自动隐藏） */
+    /* 选中对象的插件绑定字段（设备/门窗同一套: 按当前样式所属**插件**取 fields 声明；
+     * 切到没有 fields 的插件样式（如自定义台灯/固定窗）本区自动隐藏）
+     * ⚠ 绑定值存在实例 obj[key] 上（不是按 style 分桶），同一插件下切换多个样式
+     *   共用同一份绑定 —— 灯换个灯体造型不会丢已绑的功率/色温实体。
+     *   序列化时 catalog.copyFields 用所有插件 fields 的并集做白名单，切样式/存档都不丢。 */
     selFields() {
       const k = this.selection.kind;
       if (k !== 'device' && k !== 'door' && k !== 'window') return [];
@@ -612,7 +616,11 @@ const AppComponent = {
       Editor.select(null);   // 切层清选中（App 与 Editor 两边由 select 内部同步）
       this.setFloor();
       if (!noView) this.viewDirty();   // 切层 = fit 重新取景，算一次视图变化（撤销能回到原来那层的取景）
-      if (this.mode === '3d') View3D.rebuild(this.project, i);
+      /* 切层必须让 3D 场景（含背景插件构图）一起换层：背景 group 是按当前楼层的
+       * 房屋包围盒摆位的，只在 3D 模式 rebuild 会让「2D 下切层」时背景停留在上一层
+       * 的落点，之后切回 3D 前房屋与平台就是错开的。切层是低频操作，隐藏容器里
+       * 多建一次 3D 模型可以接受；进 3D 时 setMode 会再 resize + rebuild 一次。 */
+      View3D.rebuild(this.project, i);
     },
     addFloor() {
       this.project.floors.push(newFloor((this.project.floors.length + 1) + '层'));
@@ -761,7 +769,7 @@ const AppComponent = {
         }
       }
       // 背景不是选择类工具（isSelectTool 不含 backdrop），选中对象时点背景面板不会自己变，
-      // 这里显式清掉选中态 → 右侧回到「楼层设置」（含当前背景参数区）
+      // 这里显式清掉选中态 → 右侧统一切到「背景设置」面板（由 tool === 'backdrop' 驱动）
       if (next === 'backdrop' && this.selection) {
         Editor.select(null);
         Editor.render();
@@ -778,12 +786,23 @@ const AppComponent = {
     applyBg() {
       if (!window.PluginEngine || !View3D.scene) return;
       this.bindBgSettings();
-      PluginEngine.applyBackground(this.bgStyle, View3D);
+      /* 显式重放的三个前置动作（缺一个都会让背景与房屋错位）：
+       * 1) init 时 View3D 还没 build 过，houseBounds() 返回 null，插件会按默认
+       *    8×8 原点构图 —— 这里先把 project / house 对准当前楼层；
+       * 2) 取消同层拖墙挂起的 160ms 重放，避免和本次显式重放并发双重建销 group；
+       * 3) 成功后提交构图指纹，下一次 build 才不会误判「构图变了」再画一遍；
+       *    失败不提交，留旧 key 让 build 自动重试。 */
+      View3D.cancelBgReplay();
+      View3D.ensureHouse(this.project, this.floorIdx);
+      if (PluginEngine.applyBackground(this.bgStyle, View3D) === true) View3D.syncBgKey();
     },
     /* 把项目里的背景参数 / 实体绑定对象直接交给引擎（同一引用：面板改值 → 项目数据同步变 → 自动保存） */
     bindBgSettings() {
       if (!window.PluginEngine || !this.project) return;
       const s = this.project.settings || (this.project.settings = {});
+      /* 老存档的实体绑定按样式存，这里就地合并成插件级一份（幂等），
+       * 保证后续自动保存写进 data/project.json 的也是同一把 key。 */
+      if (PluginEngine.migrateProjectBg) PluginEngine.migrateProjectBg(s);
       if (!s.backgroundOptions) s.backgroundOptions = {};
       if (!s.backgroundFields) s.backgroundFields = {};
       PluginEngine.bgOptions = s.backgroundOptions;
@@ -807,12 +826,14 @@ const AppComponent = {
       this.dirty();
     },
     /* 改背景的实体绑定：绑定只影响数据，不重建几何，所以只推一次 onData。
-     * 值存 settings.backgroundFields['<背景id>'][key]，换回默认绑定时删掉该键。 */
+     * 值存 settings.backgroundFields['<插件id>'][key] —— 该插件所有样式共用，
+     * 切样式不会丢；换回未绑定时删掉该键。 */
     setBgField(key, val) {
       if (!this.bgStyle || !window.PluginEngine || !key) return;
       this.bindBgSettings();
       const store = PluginEngine.bgFields;
-      const cur = store[this.bgStyle] || (store[this.bgStyle] = {});
+      const pk = PluginEngine.bgFieldKey(this.bgStyle);
+      const cur = store[pk] || (store[pk] = {});
       const eid = String(val || '').trim();
       if (eid) cur[key] = eid; else delete cur[key];
       this.bgTick++;
@@ -945,7 +966,8 @@ const AppComponent = {
       }
       this.commit({ redraw2d: false });
     },
-    /* 切换样式: 存 obj.style（形如 'plugin:style'）；设备首次切换带出该造型的默认离地高度 */
+    /* 切换样式: 只存 obj.style（形如 'plugin:style'）；设备首次切换带出该造型的默认离地高度。
+     * 只改 style / z，不动实例上的 fields 绑定值 —— 同一插件多个样式共用绑定（与背景同口径）。 */
     setSelStyle(s) {
       const it = this.selItem;
       if (!it || !s || it.style === s.id) return;

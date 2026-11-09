@@ -1,7 +1,7 @@
 {
   "id": "background",
   "name": "户外地面",
-  "version": "1.5.1",
+  "version": "1.6.2",
   "kind": "background",
-  "description": "户外地面背景：草地 / 沙滩 / 石板 / 木栈道 / 雪地 / 水面（动态波纹）/ 草原（立体草丛）。apply 统一返回 3D 模型 { group }——扁平背景是平面网格贴整图（ctx.plane 组装），repeat 与参数在插件内部消化；要立体就往 group 里加体块。顶层带 fields + onData 样例：绑定天气/数值实体后由 onData 在 overlayGroup 里画天气牌，静态背景同样生效"
+  "description": "户外地面背景：草地 / 沙滩 / 石板 / 木栈道 / 雪地 / 水面（动态波纹）/ 草原（立体草丛）/ 山顶平台（立体，houseY 默认 +6）/ 下沉庭院（立体，houseY 默认 -3）。apply 统一返回 3D 模型 { group }——扁平背景是平面网格贴整图（ctx.plane 组装）；立体背景按样式参数 houseY 画脚下地形，引擎按同一个值抬升整栋房屋。顶层带 fields + onData 样例：绑定天气/数值实体后由 onData 在 overlayGroup 里画天气牌，静态背景同样生效；字段绑定按插件共用一份，切换样式不丢"
 }

@@ -1,13 +1,13 @@
 {
   "$doc": {
-    "说明": "家具形态清单（唯一数据源），运行时由 /api/catalog 动态加载；Docker 部署后直接改本文件 + 丢 GLB 进 models/，重启服务即生效，无需改代码",
-    "类型与形态": "类型(type) 的唯一出处就是本文件的 types 数组（前后端共用这一份：服务端按它校验家具包的 type，前端按它生成家具库页签，改这里两边同时生效，不需要改代码）；形态(id) 是同一类型下的不同模型，全部写在本文件 items 中，由 assets 决定，代码不写死。type 是必填项：导入家具包时缺失或超出枚举会被拒绝（本文件内的条目请照枚举写，不确定归哪类写 other）",
-    "items": "家具形态列表。id=形态标识（已放置家具实例通过 mid 字段引用它）；type=所属固定类型；name=显示名；w/d/h=尺寸(米)；color=兜底色；icon=平面图标(SVG 内部图元，见下条)；model=GLB 路径（相对 /assets/models/，默认 <id>.glb）；scale=模型额外缩放(可选)",
-    "未声明的模型": "models/ 下未在 items 里声明的 .glb 会被服务端扫描自动发现，没有 type（前端归入「其他」），name=文件名；在 items 里补一条即可指定类型/尺寸/中文名",
+    "说明": "家具形态清单（运行时由 /api/catalog 动态加载）。内置 items 已精简为最小存量集：只保留 data/project.json、示例户型与 Docker 初始项目实际引用的 15 件模型，供老数据兼容。新增/替换家具一律走 kind:\"catalog\" 自定义家具包（编辑器「导入插件」上传 zip，落到 custom/models/<项目id>/），不要再往 assets/models/ 里加文件、也不要在 items 里追加条目；types 是家具分类枚举的唯一出处，保留不动。",
+    "类型与形态": "类型(type) 的唯一出处就是本文件的 types 数组（前后端共用这一份：服务端按它校验家具包的 type，前端按它生成家具库页签，改这里两边同时生效，不需要改代码）；形态(id) 既可来自本文件 items（内置存量），也可来自自定义家具包（条目 id = \"<项目id>:<包内id>\"），代码不写死。type 是必填项：导入家具包时缺失或超出枚举会被拒绝（本文件内的条目请照枚举写，不确定归哪类写 other）。",
+    "items": "内置家具形态列表（最小存量集，15 条）。id=形态标识（已放置家具实例通过 mid 字段引用它）；type=所属固定类型；name=显示名；w/d/h=尺寸(米)；color=兜底色；icon=平面图标(SVG 内部图元，见下条)；model=GLB 路径（相对 /assets/models/，默认 <id>.glb）；scale=模型额外缩放(可选)。扩展请导入家具包，不要在此追加条目。",
+    "未声明的模型": "兼容性说明：models/ 下未在 items 里声明的 .glb 仍会被服务端扫描自动发现（没有 type，前端归入「其他」，name=文件名）。这是旧机制，内置目录已不再放散装 glb；新家具请走自定义家具包，由包内 item.json 指定类型/尺寸/中文名。",
     "设备造型": "不在本文件配置。有状态设备（灯/开关/传感器/空调/窗帘/风扇/摄像头/扫地机）的造型由 assets/plugins/<插件>/plugin.js 里的 styles 声明，启动时注册进插件引擎并自动聚合到界面",
-    "导入的家具": "编辑器右上角「导入插件」上传 kind:\"catalog\" 的 zip（包根一个 item.json + 若干平铺的 glb，items 数组每个模型一条），整包装到 custom/models/<项目id>/，服务端扫描后合并进本清单：目录条目 id = \"<项目id>:<包内条目id>\"，所以不会与内置条目重名。type 必填且必须命中本文件的 types，所以本文件不需要任何改动",
+    "导入的家具": "推荐的唯一扩展方式（自定义家具包）：编辑器右上角「导入插件」上传 kind:\"catalog\" 的 zip（包根一个 item.json + 若干平铺的 glb，items 数组每个模型一条），整包装到 custom/models/<项目id>/，服务端扫描后合并进本清单：目录条目 id = \"<项目id>:<包内条目id>\"，所以不会与内置条目重名，两个包写同名也互不干扰。type 必填且必须命中本文件的 types，所以本文件不需要任何改动。想接管内置 id（如换掉 sofa 的模型）用 custom/catalog.json 整条覆盖，或把同名 glb 放进 custom/models/。",
     "示例": [
-      "新增一张床: 把 bed_king.glb 放进 assets/models/，在 items 里追加 {\"id\":\"bed_king\",\"type\":\"bed\",\"name\":\"特大床\",\"w\":2,\"d\":2.1,\"h\":0.5,\"color\":\"#b7c6d9\",\"icon\":\"<rect x=\\\"8\\\" y=\\\"6\\\" width=\\\"52\\\" height=\\\"34\\\" rx=\\\"3\\\" fill=\\\"none\\\" stroke=\\\"#5d6b82\\\" stroke-width=\\\"2.5\\\"/>\"}",
+      "新增一张床: 用 studio 建一个家具项目导出 zip（kind:\"catalog\"，item.json 的 items 写一条 {\"id\":\"bed_king\",\"type\":\"bed\",\"name\":\"特大床\",\"w\":2,\"d\":2.1,\"h\":0.5,\"model\":\"bed_king.glb\"}），编辑器「导入插件」上传即可；不用改 assets/ 任何文件，也不用重建镜像",
       "新增一种灯具造型: 在 assets/plugins/light/plugin.js 的 styles 里加 {id:'linear',name:'线性灯',z:2.75}"
     ],
     "icon": "平面图标：一段 SVG 内部图元（不要写 <svg> 外壳），坐标系固定 viewBox=\"0 0 68 46\"，引擎会按需缩放并套上 <svg>。用于家具库列表与属性面板的缩略图；不写则用通用方块。可自由增删图元/改配色，改完重启服务即生效，无需改代码"
@@ -31,28 +31,6 @@
       "h": 0.75,
       "color": "#c9a26e",
       "model": "/assets/models/sofa.glb",
-      "type": "sofa",
-      "icon": "<rect x=\"10\" y=\"8\" width=\"48\" height=\"30\" rx=\"7\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"18\" y=\"15\" width=\"32\" height=\"10\" rx=\"4\" fill=\"#5d6b82\" opacity=\".35\"/>"
-    },
-    {
-      "id": "sofa2",
-      "name": "双人沙发",
-      "w": 1.6,
-      "d": 0.9,
-      "h": 0.75,
-      "color": "#c9a26e",
-      "model": "/assets/models/sofa2.glb",
-      "type": "sofa",
-      "icon": "<rect x=\"10\" y=\"8\" width=\"48\" height=\"30\" rx=\"7\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"18\" y=\"15\" width=\"32\" height=\"10\" rx=\"4\" fill=\"#5d6b82\" opacity=\".35\"/>"
-    },
-    {
-      "id": "armchair",
-      "name": "单人沙发",
-      "w": 0.85,
-      "d": 0.85,
-      "h": 0.75,
-      "color": "#b5896e",
-      "model": "/assets/models/armchair.glb",
       "type": "sofa",
       "icon": "<rect x=\"10\" y=\"8\" width=\"48\" height=\"30\" rx=\"7\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"18\" y=\"15\" width=\"32\" height=\"10\" rx=\"4\" fill=\"#5d6b82\" opacity=\".35\"/>"
     },
@@ -123,17 +101,6 @@
       "icon": "<ellipse cx=\"34\" cy=\"23\" rx=\"26\" ry=\"14\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/>"
     },
     {
-      "id": "sidetable",
-      "name": "边几",
-      "w": 0.48,
-      "d": 0.48,
-      "h": 0.5,
-      "color": "#a98457",
-      "model": "/assets/models/sidetable.glb",
-      "type": "table",
-      "icon": "<circle cx=\"34\" cy=\"23\" r=\"13\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/>"
-    },
-    {
       "id": "nightstand",
       "name": "床头柜",
       "w": 0.5,
@@ -189,39 +156,6 @@
       "icon": "<rect x=\"10\" y=\"8\" width=\"48\" height=\"30\" rx=\"2\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><line x1=\"34\" y1=\"8\" x2=\"34\" y2=\"38\" stroke=\"#5d6b82\" stroke-width=\"2\"/><line x1=\"22\" y1=\"23\" x2=\"30\" y2=\"23\" stroke=\"#5d6b82\" stroke-width=\"2\"/><line x1=\"38\" y1=\"23\" x2=\"46\" y2=\"23\" stroke=\"#5d6b82\" stroke-width=\"2\"/>"
     },
     {
-      "id": "sideboard",
-      "name": "餐边柜",
-      "w": 1.5,
-      "d": 0.42,
-      "h": 0.85,
-      "color": "#c4ad87",
-      "model": "/assets/models/sideboard.glb",
-      "type": "cabinet",
-      "icon": "<rect x=\"10\" y=\"12\" width=\"48\" height=\"22\" rx=\"2\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><line x1=\"34\" y1=\"12\" x2=\"34\" y2=\"34\" stroke=\"#5d6b82\" stroke-width=\"2\" opacity=\".5\"/>"
-    },
-    {
-      "id": "shoecab",
-      "name": "鞋柜",
-      "w": 1.1,
-      "d": 0.32,
-      "h": 1,
-      "color": "#c4ad87",
-      "model": "/assets/models/shoecab.glb",
-      "type": "cabinet",
-      "icon": "<rect x=\"10\" y=\"12\" width=\"48\" height=\"22\" rx=\"2\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><line x1=\"34\" y1=\"12\" x2=\"34\" y2=\"34\" stroke=\"#5d6b82\" stroke-width=\"2\" opacity=\".5\"/>"
-    },
-    {
-      "id": "island",
-      "name": "岛台",
-      "w": 1.8,
-      "d": 0.9,
-      "h": 0.9,
-      "color": "#cbb896",
-      "model": "/assets/models/island.glb",
-      "type": "kitchen",
-      "icon": "<rect x=\"10\" y=\"10\" width=\"48\" height=\"26\" rx=\"4\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"16\" y=\"15\" width=\"36\" height=\"16\" rx=\"3\" fill=\"#5d6b82\" opacity=\".25\"/>"
-    },
-    {
       "id": "stove",
       "name": "燃气灶",
       "w": 0.72,
@@ -252,39 +186,6 @@
       "color": "#e8ecf1",
       "model": "/assets/models/sink.glb",
       "type": "bath",
-      "icon": "<rect x=\"10\" y=\"10\" width=\"48\" height=\"26\" rx=\"4\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"16\" y=\"15\" width=\"36\" height=\"16\" rx=\"3\" fill=\"#5d6b82\" opacity=\".25\"/>"
-    },
-    {
-      "id": "bathtub",
-      "name": "浴缸",
-      "w": 1.6,
-      "d": 0.75,
-      "h": 0.55,
-      "color": "#dfe7ee",
-      "model": "/assets/models/bathtub.glb",
-      "type": "bath",
-      "icon": "<rect x=\"10\" y=\"10\" width=\"48\" height=\"26\" rx=\"4\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"16\" y=\"15\" width=\"36\" height=\"16\" rx=\"3\" fill=\"#5d6b82\" opacity=\".25\"/>"
-    },
-    {
-      "id": "plant",
-      "name": "绿植",
-      "w": 0.5,
-      "d": 0.5,
-      "h": 1.1,
-      "color": "#7fae7a",
-      "model": "/assets/models/plant.glb",
-      "type": "deco",
-      "icon": "<circle cx=\"34\" cy=\"23\" r=\"13\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><circle cx=\"34\" cy=\"23\" r=\"5\" fill=\"#5d6b82\" opacity=\".35\"/>"
-    },
-    {
-      "id": "rug",
-      "name": "地毯",
-      "w": 2,
-      "d": 1.4,
-      "h": 0.02,
-      "color": "#d8cfc0",
-      "model": "/assets/models/rug.glb",
-      "type": "deco",
       "icon": "<rect x=\"10\" y=\"10\" width=\"48\" height=\"26\" rx=\"4\" fill=\"none\" stroke=\"#5d6b82\" stroke-width=\"2.5\"/><rect x=\"16\" y=\"15\" width=\"36\" height=\"16\" rx=\"3\" fill=\"#5d6b82\" opacity=\".25\"/>"
     }
   ]

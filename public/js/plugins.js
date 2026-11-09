@@ -266,7 +266,8 @@ const PluginEngine = {
   /* 聚合条目加插件命名空间: id = '<插件id>:<条目id>'（多个插件可能定义同 id 条目），
    * sid 保留插件内部原始 id —— 传给 model3d/plan2d 的插件代码不感知聚合命名空间 */
   prefixItem(def, it) {
-    /* custom 随 def 透传：造型来自 custom/plugins 时，样式/同类模型网格显示「自定义」角标 */
+    /* custom 随 def 透传：造型来自 custom/plugins 时，样式/同类模型网格显示「自定义」角标；
+     * 背景面板则把它上移到插件分组标题（见 backgroundGroups），样式按钮里不再重复。 */
     return Object.assign({}, it, { id: def.id + ':' + it.id, sid: it.id, plugin: def.id, custom: !!def.custom });
   },
 
@@ -335,15 +336,24 @@ const PluginEngine = {
     repeatOpt(def) {
       return { key: 'repeat', label: '颗粒密度', type: 'range', min: 8, max: 40, step: 2, def };
     },
-    /* 背景整体偏移参数（引擎保留键 offsetX/offsetZ，米，默认 0 = 房屋落在背景中心）：
-     * 偏移会算进 ctx.house / ctx.safe（背景坐标系里房屋的位置），插件照 house.cx/cy 构图即可。
-     * 返回数组，展开进样式的 options: [...K.offsetOpts()] */
-    offsetOpts(range) {
+    /* 背景「位置参数」（三个引擎保留键，米）：offsetX / offsetZ 是水平偏移，
+     * houseY 是房屋地板相对背景基准面 y=0 的高度（正=悬空/山上，负=低洼/下沉）。
+     * 三者同属 styles[].options，值按 '<插件id>:<背景id>' 存进 project.settings.backgroundOptions，
+     * 每个背景样式各自一份；引擎读 houseY 抬升整栋房屋（root.position.y），并把同一个值
+     * 交给插件（ctx.options.houseY / ctx.house.y），插件据此画山顶平台或挖盆地。
+     * defH 只影响 houseY 的默认值：插件声明平台的高度就传 H（如 6），低洼样式传负值。 */
+    positionOpts(range, defH) {
       const m = range || 30;
+      const h = (typeof defH === 'number' && isFinite(defH)) ? defH : 0;
       return [
         { key: 'offsetX', label: '东西偏移', type: 'range', min: -m, max: m, step: 0.5, def: 0, tip: '房屋在背景画面里东/西偏多少米（+西 = 往右拖背景左移，房屋相对偏东）' },
         { key: 'offsetZ', label: '南北偏移', type: 'range', min: -m, max: m, step: 0.5, def: 0, tip: '房屋在背景画面里南/北偏多少米（+北 = 往右拖背景上移，房屋相对偏南）' },
+        { key: 'houseY', label: '离地高度', type: 'range', min: -10, max: 30, step: 0.5, def: h, tip: '房屋地板相对背景基准面的高度（米）：正值=房屋悬空/建在山顶平台，负值=房屋在低洼/下沉庭院。插件从 ctx.options.houseY 读同一个值来画脚下地形' },
       ];
+    },
+    /* 旧版两条水平偏移（保持兼容，老插件还能用）：新写的背景插件请用 positionOpts() */
+    offsetOpts(range) {
+      return this.positionOpts(range).slice(0, 2);
     },
   },
 
@@ -469,23 +479,34 @@ const PluginEngine = {
    * 静态 / 动态由插件声明：
    *   refresh: 0 / 缺省  → 静态，只在切换时画一次（零每帧开销）
    *   refresh: 1..30     → 每秒回调 update(t, api) 这么多次（水面波动 / 落叶 / 云影）
-   * ctx = { THREE, size, house, safe, options, refresh, plane(画布|贴图, 尺寸M?), planeSize }
-   *   house: 背景坐标系里的房屋包围盒 { minX,maxX,minY,maxY,w,d,cx,cy,floors,hash }
+   * ctx = { THREE, size, house, safe, houseY, options, refresh, plane(画布|贴图, 尺寸M?, hole?), planeSize }
+   *   house: 背景坐标系里的房屋包围盒 { minX,maxX,minY,maxY,w,d,cx,cy,y,h,topY,floors,hash }
+   *          y = 房屋地板高度（样式参数 houseY，可为负）、h = 房屋实体高、topY = y+h；
+   *          三者只是高度信息，不改变任何水平方向的字段或判定。
    *          ⚠ 坐标系原点 = **背景中心**（不是房屋中心）：房屋可能偏在一边，
    *          cx/cy 就是偏移量（米），0/0 = 房屋正落在背景中心。
    *          画布/平面都要按它摆：canvas 中心 ↔ 背景中心，房屋画在 (cx, cy)
    *   safe : 安全边界 { inner, outer, x0,x1,y0,y1, forbidden(x,z), allowed(x,z) }
    *          同样在背景坐标系里算（房屋外扩 1.5m = 禁放区），撒点照着它就不会压到房子
-   *   plane(): 引擎组装好的地面网格（默认 120m、中心对准背景中心、y=-0.05），add 进 group 即用
+   *   plane(): 引擎组装好的地面网格（默认 120m、中心对准背景中心、y=-0.05），add 进 group 即用。
+   *           第三参 hole={x0,x1,z0,z1} 可挖矩形洞（低洼时地面会盖住房子），四块共享同一贴图。
+   *   houseY: 与 ctx.options.houseY / ctx.house.y 同一个值（米，可为负）；引擎据此把整栋房屋
+   *           抬到 y=houseY（设备/家具高度仍相对房屋），插件据此画脚下平台或挖下沉庭院。
+   *   safe 新增 houseY/baseY/houseH/topY 四个纯数值；forbidden/allowed 的 2D 水平判定不变。
    * update(t, api) 的 api = { group, mesh, size }；动态改图请插件自己持有 CanvasTexture，
    *   改完直接 tex.needsUpdate = true（引擎不提供贴图回写通道）
+   * def 顶层 fields / onData 是**插件级**契约（与 studio 的 proj.fields 同口径）：绑定值存
+   *   settings.backgroundFields['<插件id>']，同一插件的所有 styles 共用一份，切样式不丢绑定；
+   *   背景参数 options 仍按 '<插件id>:<样式id>' 存（各样式默认值可能不同）。
    * → 每个字段的含义、坐标换算、可复制示例见 assets/plugins/background/plugin.js 头部注释
-   * 房屋尺寸变化（改墙/加层）时引擎自动重放背景（见 view3d.build），插件不需要感知重建时机。
-   */
+ * 切换楼层 / 房屋尺寸变化 / 改层高 / 换背景 / 改位置参数时引擎自动重放背景
+ * （见 view3d.build 的 bgKeyOf；重放失败会保留旧指纹，下次重建自动重试），
+ * 插件不需要感知重建时机，但「按房屋尺寸摆的几何体」必须在 apply() 里现算 house.w/d。
+ */
 
   bgAnim: null,     // 当前动态背景的运行记录 { id, hz, interval, acc, t, fn, api, errs }
-  bgOptions: {},    // 背景参数值: { '<插件id>:<背景id>': { key: value } }（app 注入 project.settings.backgroundOptions 的引用）
-  bgFields: {},     // 背景实体绑定: { '<插件id>:<背景id>': { 字段key: entityId } }（app 注入 project.settings.backgroundFields 的引用）
+  bgOptions: {},    // 背景参数值: { '<插件id>:<背景id>': { key: value } }（按样式独立，各样式默认值可能不同；app 注入 project.settings.backgroundOptions 的引用）
+  bgFields: {},     // 背景实体绑定: { '<插件id>': { 字段key: entityId } } —— 同一插件的所有样式共用一份（app 注入 project.settings.backgroundFields 的引用）
   bgData: null,     // 当前 onData 运行记录 { id, fn, fields, api, snap, errs }
 
   /* 全部背景（带插件前缀；条目聚合与设备/门窗样式共用 prefixItem） */
@@ -519,16 +540,23 @@ const PluginEngine = {
 
   /* 安全边界: 房屋占地外扩 inner(m) 为禁放区，outer(m) 为建议最远布置半径。
    * 传进来的 house 已经在「背景坐标系」里（cx/cy = 房屋相对背景中心的偏移），
-   * 所以禁放矩形和可布置圆都自动跟着偏移走。 */
+   * 所以禁放矩形和可布置圆都自动跟着偏移走。
+   * ⚠ 水平方向（x/z）的字段与 forbidden/allowed 判定恒为 2D，不随高度变化 —— 新增的
+   *   houseY / houseH / topY 只是给插件的**高度信息**（纯数值，米）。房屋悬空时想往
+   *   房子底下画支撑柱 / 洞穴，由插件自己比较 y < houseY 并主动绕开 allowed(x,z)。 */
   safeZone(house) {
     const inner = 1.5, outer = 45;
     const x0 = house.minX - inner, x1 = house.maxX + inner;
     const y0 = house.minY - inner, y1 = house.maxY + inner;
+    const baseY = Number(house.y) || 0;
+    const houseH = Number(house.h) || 0;
     const z = {
       inner, outer, x0, x1, y0, y1,
-      /* 是否落在禁放区（房屋占地 + 走廊） */
+      /* 高度信息（只加数据，不加判定）：baseY = 房屋地板，houseH = 房屋实体高，topY = 屋顶 */
+      houseY: baseY, baseY, houseH, topY: baseY + houseH,
+      /* 是否落在禁放区（房屋占地 + 走廊）——签名与逻辑保持 2D 不变 */
       forbidden(x, zz) { return x > x0 && x < x1 && zz > y0 && zz < y1; },
-      /* 是否在可布置环带内（禁放区外 + 半径 outer 内） */
+      /* 是否在可布置环带内（禁放区外 + 半径 outer 内）——同上 */
       allowed(x, zz) {
         if (x > x0 && x < x1 && zz > y0 && zz < y1) return false;
         const dx = x - house.cx, dz = zz - house.cy;
@@ -538,11 +566,15 @@ const PluginEngine = {
     return z;
   },
 
-  /* 按插件分组（面板直接渲染: [{ plugin, name, items:[...] }]） */
+  /* 按插件分组（面板直接渲染: [{ plugin, name, custom, items:[...] }]）
+   * custom 随 def 透传到分组：同一插件下所有样式的 custom 一致，「自定义」角标
+   * 只需在分组标题（插件名）右边显示一次，不必在每个样式按钮里重复。 */
   backgroundGroups() {
     const map = new Map();
     this.backgrounds().forEach((b) => {
-      if (!map.has(b.plugin)) map.set(b.plugin, { plugin: b.plugin, name: b.group, items: [] });
+      if (!map.has(b.plugin)) {
+        map.set(b.plugin, { plugin: b.plugin, name: b.group, custom: !!b.custom, items: [] });
+      }
       map.get(b.plugin).items.push(b);
     });
     return Array.from(map.values());
@@ -556,6 +588,28 @@ const PluginEngine = {
     if (i < 0) return id;
     const pid = BG_ID_ALIAS[id.slice(0, i)];
     return pid ? pid + id.slice(i) : id;
+  },
+
+  /* 背景实体绑定的存储键 = **插件 id**，不是 '<插件id>:<样式id>'。
+   * 字段是插件顶层 def.fields 声明的（studio 里同样是 proj.fields 插件级），
+   * 所以同一插件下切换石板 / 木栈道 / 草原… 共用同一份绑定，切样式不丢实体。
+   * 背景参数 bgOptions 不同：它按样式声明、各样式默认值不同，仍按样式 id 存。 */
+  bgFieldKey(id) {
+    const key = this.migrateBgId(id);
+    if (typeof key !== 'string' || !key) return '';
+    const i = key.indexOf(':');
+    return i < 0 ? key : key.slice(0, i);
+  },
+
+  /* 取某个背景当前生效的绑定：插件级优先；老存档 / 未迁移的运行时里可能还留着
+   * '<插件id>:<样式id>' 的分样式键，这里做一次只读兜底（插件级键存在时即使为空也优先，
+   * 否则会把用户刚解绑的实体又「复活」）。写入一律走 bgFieldKey，不再产生分样式键。 */
+  bgBindings(id) {
+    const bag = this.bgFields || {};
+    const pk = this.bgFieldKey(id);
+    if (pk && Object.prototype.hasOwnProperty.call(bag, pk)) return bag[pk] || {};
+    const legacy = this.migrateBgId(id);
+    return (legacy !== pk && bag[legacy] && typeof bag[legacy] === 'object') ? bag[legacy] : {};
   },
 
   /* 就地迁移项目设置（settings.background / settings.backgroundOptions 的键） */
@@ -573,6 +627,41 @@ const PluginEngine = {
     };
     remapKeys(settings.backgroundOptions, true);   // 新键已有的值优先
     remapKeys(settings.backgroundFields, true);    // 实体绑定按同一套背景 id 迁移
+    this.consolidateBgFields(settings);            // 再按插件合并旧的分样式绑定
+  },
+
+  /* 老数据里 backgroundFields 按样式存（'background:grass' / 'background:stone'…），
+   * 现统一成一个插件键 'background'。当前选中样式的绑定优先保留，避免多样式
+   * 对同一字段绑了不同实体时随机取到一个；已经存在插件级键时以它为准，直接丢弃旧键。
+   * 幂等：合并后所有键都没有 ':'，再跑一次不会有任何变化。 */
+  consolidateBgFields(settings) {
+    const bag = settings && settings.backgroundFields;
+    if (!bag || typeof bag !== 'object' || Array.isArray(bag)) return;
+    const authoritative = new Set(Object.keys(bag));
+    const legacy = Object.keys(bag).filter((k) => {
+      const pk = this.bgFieldKey(k);
+      return pk && pk !== k;
+    });
+    /* 当前选中的样式排最前（它的绑定就是用户眼前看到的那份） */
+    const cur = settings && settings.background;
+    legacy.sort((a, b) => (a === cur ? -1 : b === cur ? 1 : 0));
+    legacy.forEach((k) => {
+      const pk = this.bgFieldKey(k);
+      /* 插件级键本来就在（新版写过）→ 它是权威值，旧的分样式键直接丢弃，
+       * 不把用户已经解绑的实体又合并回来。 */
+      if (!authoritative.has(pk)) {
+        if (!bag[pk] || typeof bag[pk] !== 'object' || Array.isArray(bag[pk])) bag[pk] = {};
+        const dst = bag[pk];
+        const src = bag[k];
+        if (src && typeof src === 'object' && !Array.isArray(src)) {
+          /* 先写的不被覆盖（当前样式优先）：同一字段在不同样式绑了不同实体时取眼前那份 */
+          Object.keys(src).forEach((f) => {
+            if (src[f] != null && src[f] !== '' && (dst[f] == null || dst[f] === '')) dst[f] = src[f];
+          });
+        }
+      }
+      delete bag[k];
+    });
   },
 
   backgroundOf(id) {
@@ -604,6 +693,7 @@ const PluginEngine = {
     const clearAll = () => {
       if (v3.clearBackdrop) v3.clearBackdrop();
       if (v3.setGridVisible) v3.setGridVisible(true);
+      if (v3.setHouseY) v3.setHouseY(0);        // 回到默认地面：房屋落回 y=0
     };
 
     if (!id) { v3.bgId = ''; clearAll(); return false; }
@@ -618,22 +708,26 @@ const PluginEngine = {
      * 所以下面要把它换算到背景坐标系（原点 = 背景中心），换算量就是偏移参数。 */
     const real = v3.houseBounds ? v3.houseBounds() : null;
 
-    /* 背景参数（含引擎保留偏移键 offsetX / offsetZ，米）：
-     *   = 房屋相对「背景中心」的偏移，0 = 房屋居中（默认）。
-     *   正值手感沿用「往右拖 = 背景往左/往上」，即 +X = 房屋偏东、+Z = 房屋偏南。
-     * 偏移直接算进 ctx.house / ctx.safe —— 插件拿到的是背景坐标系里的房屋位置，
-     * 构图、撒点都能知道房子不在画面正中央。 */
+    /* 背景「位置参数」（三个引擎保留键，米）：offsetX / offsetZ 是水平偏移，
+     * houseY = 房屋地板相对背景基准面 y=0 的高度（正=悬空/山上，负=低洼/下沉）。
+     * 三者同属 styles[].options；houseY 同时驱动引擎抬升整栋房屋、插件画脚下地形。 */
     const bgOpts = this.optionsOf(bd);
     const clampOff = (v) => Math.max(-60, Math.min(60, Number(v) || 0));
+    const clampH = (v) => Math.max(-10, Math.min(30, Number(v) || 0));
     const offX = clampOff(bgOpts.offsetX);
     const offZ = clampOff(bgOpts.offsetZ);
+    let H = clampH(bgOpts.houseY);           // 权威源：用户保存值 > styles[].options[].def
+    const houseH = (real && Number(real.h)) || 2.8;   // 房屋实体高度（当前楼层层高）
 
-    /* house：背景坐标系里的房屋（cx/cy = 偏移量，不再是「世界中心」） */
+    /* house：背景坐标系里的房屋（cx/cy = 偏移量，不再是「世界中心」）。
+     * y/h/topY 是新增的高度信息，与 ctx.options.houseY、safe 的 baseY/topY 同源；
+     * 水平字段一字未动。 */
     const house = real ? {
       minX: real.minX - real.cx + offX, maxX: real.maxX - real.cx + offX,
       minY: real.minY - real.cy + offZ, maxY: real.maxY - real.cy + offZ,
       w: real.w, d: real.d,
       cx: offX, cy: offZ,
+      y: H, h: houseH, topY: H + houseH,
       floors: real.floors,
       hash: real.hash,
     } : null;
@@ -646,7 +740,7 @@ const PluginEngine = {
 
     /* ctx: 引擎把「房屋尺寸 + 安全边界 + 用户参数 + 地面网格工厂」交给插件，
      * 插件不需要自己测尺寸、摆平面，也不需要感知"何时该重建" */
-    const mkPlane = (src, sizeM) => {
+    const mkPlane = (src, sizeM, hole) => {
       const T = window.THREE;
       const tex = (src && src.isTexture) ? src : new T.CanvasTexture(src);
       if (v3.renderer && v3.renderer.capabilities) {
@@ -654,10 +748,39 @@ const PluginEngine = {
       }
       tex.needsUpdate = true;
       const m = sizeM || planeM;
-      const mesh = new T.Mesh(
-        new T.PlaneGeometry(m, m),
-        new T.MeshLambertMaterial({ map: tex })
-      );
+      const mat = () => new T.MeshLambertMaterial({ map: tex });
+      /* 低洼（houseY < 0）时整张地面会横穿房屋：插件可选传一个矩形洞
+       * { x0, x1, z0, z1 }（背景坐标系，米），引擎用「回」字形四块平面拼出带洞地面，
+       * 四块共享同一张贴图、按整图 UV 取样。挖不挖洞、坑壁画什么都交给插件；
+       * 不传 hole 时行为与原来完全一致（单个 120m 平面网格）。 */
+      if (hole && isFinite(hole.x0) && isFinite(hole.x1) && isFinite(hole.z0) && isFinite(hole.z1)) {
+        const half = m / 2;
+        const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v)));
+        const hx0 = cl(Math.min(hole.x0, hole.x1), -half, half);
+        const hx1 = cl(Math.max(hole.x0, hole.x1), -half, half);
+        const hz0 = cl(Math.min(hole.z0, hole.z1), -half, half);
+        const hz1 = cl(Math.max(hole.z0, hole.z1), -half, half);
+        const g = new T.Group();
+        g.name = 'background:plane-hole';
+        [[-half, half, -half, hz0], [-half, half, hz1, half],
+          [-half, hx0, hz0, hz1], [hx1, half, hz0, hz1]].forEach(([a, b, c, d]) => {
+          if (b - a <= 0.001 || d - c <= 0.001) return;
+          const geo = new T.PlaneGeometry(b - a, d - c);
+          const pos = geo.attributes.position, uv = geo.attributes.uv;
+          for (let i = 0; i < pos.count; i++) {
+            const wx = (a + b) / 2 + pos.getX(i);
+            const wz = (c + d) / 2 - pos.getY(i);   // rotation.x=-PI/2: 局部 +y → 世界 -z
+            uv.setXY(i, (wx + half) / m, (half - wz) / m);
+          }
+          uv.needsUpdate = true;
+          const piece = new T.Mesh(geo, mat());
+          piece.rotation.x = -Math.PI / 2;
+          piece.position.set((a + b) / 2, -0.05, (c + d) / 2);
+          g.add(piece);
+        });
+        return g;
+      }
+      const mesh = new T.Mesh(new T.PlaneGeometry(m, m), mat());
       mesh.rotation.x = -Math.PI / 2;
       /* 平面中心 = 背景中心（原点），不是房屋中心：房屋按 house.cx/cy 偏到一边 */
       mesh.position.set(0, -0.05, 0);   // 压到地板下方一点，避免 z-fighting
@@ -667,6 +790,7 @@ const PluginEngine = {
       THREE: window.THREE, size: 512, house,
       safe: house ? this.safeZone(house) : null,
       options: bgOpts,
+      houseY: H,          // 与 ctx.options.houseY / ctx.house.y 同一个值，插件随手可取
       refresh: this.refreshOf(bd),
       plane: mkPlane,
       planeSize: planeM,   // 默认平面边长（米）：画布 ↔ 米 的换算用得上
@@ -688,6 +812,21 @@ const PluginEngine = {
     /* 挂载: 统一 3D 模型 —— apply 必须返回 { group, update? }（扁平背景也是一个平面网格的 group） */
     if (!out.group) { clearAll(); return false; }
 
+    /* 兜底：样式完全没声明 houseY 参数、但 apply 返回了 houseY 时，回填 ctx / house / safe
+     * 的高度数值，保证 update / onData 与引擎抬升读到同一个 H。
+     * 只要声明了参数，就以参数为准（ctx 在 apply 之前构造，返回值不能反过来覆盖用户滑杆）。 */
+    const declaredH = (bd.options || []).some((o) => o && o.key === 'houseY');
+    if (!declaredH && out.houseY != null && isFinite(Number(out.houseY))) {
+      H = clampH(out.houseY);
+      bgOpts.houseY = H;
+      ctx.houseY = H;
+      if (house) { house.y = H; house.topY = H + houseH; }
+      if (ctx.safe) {
+        ctx.safe.houseY = H; ctx.safe.baseY = H;
+        ctx.safe.houseH = houseH; ctx.safe.topY = H + houseH;
+      }
+    }
+
     /* onData 专属子树：顶层数据通道只负责这部分元素（太阳 / 雨 / 天气牌…），
      * 与 styles[].apply 的时间通道 update(t, api) 物理隔离、各管各的子树。
      * 它挂在背景 group 下，重放时随 group 一起销毁重建 —— 插件不必缓存模块级引用，
@@ -708,6 +847,12 @@ const PluginEngine = {
 
     const handle = v3.setBackdrop(out.group);
     if (!handle) return false;
+
+    /* 房屋整体抬升到 H：设备 / 家具 / 门窗都是 root 的子节点，高度继续相对房屋，
+     * 实例数据（d.z / obj.z / project.json）完全不写 H。背景 group 的 y 仍是 0 —— 山脚、
+     * 河流、稻田留在基准面，插件自己在 y=H 画平台；H<0 时用上面的带洞地面挖出下沉庭院。 */
+    if (typeof v3.setHouseY === 'function') v3.setHouseY(H);
+    else if (v3.root) v3.root.position.y = H;    // 兼容没有 setHouseY 的旧 View3D
 
     /* 两个通道共用一份只读 api（数据通道多一个 overlayGroup） */
     const api = {
@@ -748,7 +893,9 @@ const PluginEngine = {
   notifyBackgroundData(force) {
     const rec = this.bgData;
     if (!rec || typeof rec.fn !== 'function') return;
-    const binds = (this.bgFields && this.bgFields[rec.id]) || {};
+    /* 绑定按插件 id 存（rec.id = '<插件id>:<样式id>'，bgFieldKey 取冒号前那段），
+     * 所以同一插件切样式后 onData 读到的仍是刚才绑的实体。 */
+    const binds = this.bgBindings(rec.id);
     const A = window.HA;
     const vals = {};
     let sig = '';

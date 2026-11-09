@@ -6,10 +6,13 @@
 
 const { createApp } = Vue;
 
-/* ---- 取景记忆（按楼层）：拖动/缩放后把相机 x,y,z 与锚点存到 localStorage，
-   键为 ha3d.displayCam.f<楼层>；切换楼层时恢复该楼层各自的视角 ---- */
+/* ---- 取景记忆（按楼层）：拖动/缩放后把相机与锚点存到 localStorage，
+   键为 ha3d.displayCam.f<楼层>；切换楼层时恢复该楼层各自的视角。
+   ⚠ 高度存的是「相对房屋基准面」的量（y − houseY），并记下当时的 houseY：
+     背景样式换成山顶/低洼、houseY 变了，旧机位仍能与房屋保持原构图。
+     早期数据没有 houseY 字段，按 houseY=0 兼容。 ---- */
 const camKey = (f) => 'ha3d.displayCam.f' + f;
-const DEF_CAM = { pos: [6, 12, 9] };                // 各楼层无记忆时的默认机位
+const DEF_CAM = { dir: [6, 12, 9], dist: Math.hypot(6, 12, 9) };   // 相对房屋中心的默认机位
 let camSaveTimer = null, camSaveFirst = 0;
 let camFloor = 0;                                   // 当前取景记忆归属楼层
 function scheduleSaveCam() {
@@ -25,18 +28,23 @@ function scheduleSaveCam() {
 function saveCam() {
   try {
     const p = View3D.camera.position, t = View3D.controls.target;
+    const H = View3D.houseY || 0;
     const r = (n) => Math.round(n * 100) / 100;
     localStorage.setItem(camKey(camFloor), JSON.stringify({
       floor: camFloor,
-      pos: [r(p.x), r(p.y), r(p.z)],
-      target: [r(t.x), r(t.y), r(t.z)],
+      houseY: r(H),
+      pos: [r(p.x), r(p.y - H), r(p.z)],
+      target: [r(t.x), r(t.y - H), r(t.z)],
     }));
   } catch (e) { /* ignore */ }
 }
 function applyCam(s) {
-  View3D.camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+  const H = View3D.houseY || 0;
+  const base = (typeof s.houseY === 'number' && isFinite(s.houseY)) ? s.houseY : 0;
+  const dy = H - base;
+  View3D.camera.position.set(s.pos[0], s.pos[1] + dy, s.pos[2]);
   const ok = (a) => Array.isArray(a) && a.length === 3 && a.every((n) => typeof n === 'number' && isFinite(n));
-  if (ok(s.target)) View3D.controls.target.set(s.target[0], s.target[1], s.target[2]);
+  if (ok(s.target)) View3D.controls.target.set(s.target[0], s.target[1] + dy, s.target[2]);
   View3D.controls.update();
 }
 /* 恢复指定楼层的取景记忆（该楼层无记忆时用默认机位） */
@@ -172,6 +180,11 @@ createApp({
       View3D.controls.autoRotate = this.autoRotate;
       View3D.controls.autoRotateSpeed = 0.6;
       if (this.project) {
+        /* 背景参数 / 实体绑定必须在 rebuild 之前注入：build() 的构图指纹会读
+         * bgOptions，晚注入会让首次重放拿到空参数（旧代码正是这个顺序漏洞）。 */
+        PluginEngine.bgOptions = (this.project.settings && this.project.settings.backgroundOptions) || {};
+        PluginEngine.bgFields = (this.project.settings && this.project.settings.backgroundFields) || {};
+        const bgId = (this.project.settings && this.project.settings.background) || '';
         View3D.rebuild(this.project, this.floorIdx);   // 楼层模型 + 标签 + 渲染（统一入口）
         View3D.frame(DEF_CAM);   // 默认机位；自转锚点仍是房屋中心
         // 取景记忆（按楼层）：恢复当前楼层上次保存的机位；此后每次操作自动保存到所属楼层
@@ -181,10 +194,7 @@ createApp({
         View3D.onAnchor = () => saveCam();   // 长按设锚点/重置锚点后立即持久化（仅大屏；编辑页不设此回调）
         View3D.setLabelsVisible(this.showLabels);   // 恢复标签开关状态（localStorage 持久化）
         // 背景插件（3D 地面模型，扁平/立体/动态）；未选择时保持大屏浅灰底 + 网格
-        const bgId = (this.project.settings && this.project.settings.background) || '';
-        PluginEngine.bgOptions = (this.project.settings && this.project.settings.backgroundOptions) || {};
-        PluginEngine.bgFields = (this.project.settings && this.project.settings.backgroundFields) || {};
-        if (bgId) PluginEngine.applyBackground(bgId, View3D);
+        if (bgId && PluginEngine.applyBackground(bgId, View3D) === true) View3D.syncBgKey();
       }
       View3D.startLoop();
 

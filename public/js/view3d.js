@@ -10,12 +10,21 @@ const View3D = {
   renderer: null, scene: null, camera: null, controls: null,
   root: null,              // 当前楼层根节点
   wrap: null,
+  houseY: 0,               // 房屋地板相对背景基准面 y=0 的高度（米，可为负）；由背景样式参数 houseY 驱动
   pickGroups: [],          // 可点击模型根 Group（设备 + 门/窗；拾取时递归 raycast，命中后沿父链回溯）
   labels: [],              // {el, d}：el = 标签 DOM，d = 设备数据
   labelsVisible: true,     // 标签显示开关（编辑页顶栏可切换）
   currentFloorIdx: 0,
   raycaster: null,
   wallH: 2.8,
+
+  /* 背景重放状态（统一管理，避免 build / applyBg 各写一份导致状态漂移）
+   * _bgKey 只在「重放成功」后提交；失败保留旧值，下一次 build 会自动重试。 */
+  _bgKey: '',
+  _bgFloorIdx: -1,
+  _bgReplay: null,
+  _bgRetry: null,      // 重放失败后的自动重试 timer（插件 loadAll 异步，别等用户再操作）
+  _bgFail: 0,          // 连续失败次数，超过 3 次停手，避免坏插件刷屏
 
   webglOk: true,
 
@@ -53,7 +62,8 @@ const View3D = {
     this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.maxPolarAngle = Math.PI / 2.05;
+    /* 允许略微仰视（polar > 90°）：房屋悬空/建在山顶时，能看到房屋底面与底下的地形 */
+    this.controls.maxPolarAngle = Math.PI * 0.66;
 
     this.raycaster = new THREE.Raycaster();
 
@@ -131,6 +141,46 @@ const View3D = {
     this.backdrop = null;
   },
 
+  /* 背景构图输入指纹。只有这些量全一致，旧的背景 group 才能继续复用：
+   * 楼层 / 房屋包围盒 / 层高 / 背景样式 / 三个位置参数。
+   * 位置参数读 bgOptions 里的「保存值」（不含 def 默认值），保证 key 稳定不抖动；
+   * 把它们也纳入是为了让「显式重放失败」能靠下一次 build 自愈。 */
+  bgKeyOf() {
+    const h = this.house || (this.project ? this.computeHouse(this.project, this.currentFloorIdx) : null);
+    const bo = (window.PluginEngine && PluginEngine.bgOptions
+      && PluginEngine.bgOptions[this.bgId]) || {};
+    return [this.currentFloorIdx, h ? h.hash : '', h ? h.h : '',
+      this.bgId || '', bo.offsetX || 0, bo.offsetZ || 0, bo.houseY || 0].join('|');
+  },
+
+  /* 编辑页 init 时 View3D 还没 build 过（project/house 都是空的），
+   * 若直接 applyBackground，houseBounds() 返回 null → 背景按默认 8×8 原点构图，
+   * 房屋与平台错位；2D 模式下改背景 / 调参数也会一直错，且 webglOk=false 时永不修正。
+   * 所有「非 build 触发」的背景绘制入口先调它对准当前楼层。 */
+  ensureHouse(project, floorIdx) {
+    if (!project) return this.house;
+    this.project = project;
+    if (typeof floorIdx === 'number') this.currentFloorIdx = floorIdx;
+    this.house = this.computeHouse(project, this.currentFloorIdx);
+    return this.house;
+  },
+
+  /* 显式重放（或新的 build）接管时，取消挂起的防抖重放与自动重试：
+   * 否则同层拖墙挂起的 160ms timer / 失败重试 timer 会在 applyBg() 之后又画一次，
+   * 同一帧双重建销 group、重建 onData 订阅并闪帧。 */
+  cancelBgReplay() {
+    clearTimeout(this._bgReplay); this._bgReplay = null;
+    clearTimeout(this._bgRetry); this._bgRetry = null;
+    this._bgFail = 0;
+  },
+
+  /* 显式重放成功后提交指纹，避免下一次 build 误判「构图变了」再画一遍。
+   * 失败时不要调用 —— 保留旧 key，让 build 有机会重试。 */
+  syncBgKey() {
+    this._bgKey = this.bgKeyOf();
+    this._bgFloorIdx = this.currentFloorIdx;
+  },
+
   /* ---------------- 构建 ---------------- */
   build(project, floorIdx) {
     if (!this.webglOk) return;
@@ -166,6 +216,9 @@ const View3D = {
     (fl.furniture || []).forEach((f) => this.buildFurniture(f));
     (fl.devices || []).forEach((d) => this.buildDevice(d));
 
+    /* 房屋整体基准高度：设备/家具/门窗都挂在 root 下，它们的高度仍然是「相对房屋」的，
+     * 这里统一抬升整组即可，实例数据（d.z / obj.z / project.json）不写 H。 */
+    this.root.position.y = this.houseY;
     this.scene.add(this.root);
     // 旋转/环绕锚点 = 户型包围盒中心（而不是固定原点，否则模型不在原点时会绕角落转）
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -174,24 +227,52 @@ const View3D = {
       minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2);
     });
     if (minX === Infinity) { minX = 0; minY = 0; maxX = 8; maxY = 8; }
-    this.center = new THREE.Vector3((minX + maxX) / 2, 1, (minY + maxY) / 2);
+    /* 锚点 y 贴合房屋基准高度：H+1 保持原来「房屋中心上方 1m」的相对量。
+     * 相机跟着 target 一起平移同样差值，重建（切层 / 拖墙 / 撤销）时构图不跳。 */
+    this.center = new THREE.Vector3((minX + maxX) / 2, this.houseY + 1, (minY + maxY) / 2);
+    const prevTarget = this.controls.target.clone();
     this.controls.target.copy(this.center);
+    this.camera.position.add(this.center.clone().sub(prevTarget));
+    this.controls.update();
 
     /* 当前楼层的房屋包围盒 + 安全边界的地基：背景插件按它决定在哪里画。
-     * 按层取（楼层间户型尺寸可能不一样，背景构图跟着当前层走）；
-     * hash 只含包围盒 —— 切到尺寸不同的楼层 / 拖墙改尺寸都会重放背景，
-     * 尺寸相同的楼层间切换不重放（构图完全一样，省一次重绘）。 */
+     * 按层取（楼层间户型尺寸可能不一样，背景构图跟着当前层走）。
+     * 重放判定键 = 楼层号 | 包围盒 | 层高 | 背景样式 | 位置参数（见 bgKeyOf），
+     * 任一变化都要重画背景：
+     *   · 切层：哪怕两层户型完全一样也必须重放（背景按「当前层」构图），
+     *     否则背景停在上一层的落点，房屋就会画到平台外面；
+     *   · 拖墙 / 改尺寸 / 改层高：走 160ms 防抖，避免连续重建把带 3D 体块的插件跑爆；
+     *   · 换背景 / 改位置参数：通常由 applyBg() 显式重放，纳入 key 是失败后的自愈兜底。
+     * 插件不需要、也不应该自己通知重绘 —— 这是引擎的职责。 */
     this.house = this.computeHouse(project, this.currentFloorIdx);
-    if (this.house.hash !== this._houseHash) {
-      this._houseHash = this.house.hash;
-      // 尺寸变化（拖墙/加层/删层）才重放背景；高频改设备坐标不会触发重建。
-      // 防抖 160ms：拖动墙体会连续重建，重放背景（尤其带 3D 体块的）不能每次都跑
-      clearTimeout(this._bgReplay);
-      this._bgReplay = setTimeout(() => {
-        if (window.PluginEngine && this.bgId && PluginEngine.applyBackground) {
-          PluginEngine.applyBackground(this.bgId, this);
+    const bgKey = this.bgKeyOf();
+    const floorChanged = this._bgFloorIdx !== this.currentFloorIdx;
+    this._bgFloorIdx = this.currentFloorIdx;
+    if (bgKey !== this._bgKey) {
+      this.cancelBgReplay();
+      const replay = () => {
+        if (!window.PluginEngine || !this.bgId || !PluginEngine.applyBackground) return;
+        /* 每次执行现算指纹：等待 160ms 防抖 / 300ms 重试期间构图可能又变了，
+         * 也可能已被 applyBg() 显式画好（此时直接收手，不重复绘制）。 */
+        const key = this.bgKeyOf();
+        if (key === this._bgKey) return;
+        let done = false;
+        try { done = PluginEngine.applyBackground(this.bgId, this) === true; }
+        catch (e) { console.warn('[View3D] 背景重放异常:', e); }
+        if (done) { this._bgKey = key; this._bgFail = 0; return; }
+        /* 失败：保留旧指纹，并主动安排有限次重试。插件 loadAll 是异步的，
+         * 只等「下一次 build」可能永远等不到 —— 背景会一直空白。
+         * 3 次都失败就停手，避免坏插件每帧刷错误。 */
+        this._bgFail = (this._bgFail || 0) + 1;
+        if (this._bgFail <= 3) {
+          clearTimeout(this._bgRetry);
+          this._bgRetry = setTimeout(replay, 300);
         }
-      }, 160);
+      };
+      /* 切层是一次性低频操作：立即重放，别让 160ms 防抖窗口里还显示旧地形。
+       * 同一层内改墙 / 改层高 / 改参数仍防抖。 */
+      if (floorChanged) replay();
+      else this._bgReplay = setTimeout(replay, 160);
     }
     this.render();
   },
@@ -226,10 +307,14 @@ const View3D = {
     });
     if (minX === Infinity) { minX = 0; minY = 0; maxX = 8; maxY = 8; }
     const r2 = (v) => Math.round(v * 100) / 100;
+    /* 房屋实体高度（米）：3D 只画当前楼层，所以取该层的层高；没画墙时按缺省户型层高。
+     * 只作为高度信息给背景插件（safe.houseH / safe.topY），不参与包围盒 hash。 */
+    const flH = (typeof floorIdx === 'number' && all[floorIdx]) ? Number(all[floorIdx].height) : 0;
     const h = {
       minX: r2(minX), maxX: r2(maxX), minY: r2(minY), maxY: r2(maxY),
       w: r2(maxX - minX), d: r2(maxY - minY),
       cx: r2((minX + maxX) / 2), cy: r2((minY + maxY) / 2),
+      h: flH > 0 ? r2(flH) : 2.8,
       floors,
     };
     h.hash = [h.minX, h.maxX, h.minY, h.maxY].join('|');
@@ -265,9 +350,29 @@ const View3D = {
     this.controls.target.copy(c);
   },
 
+  /* 房屋基准高度（由背景样式的 houseY 参数驱动；正=悬空/山上，负=低洼）。
+   * 只挪 root 与相机/锚点，不动任何实例数据：设备、家具、门窗的高度仍相对房屋。
+   * 相机与 controls.target 同步平移同样的差值，用户已调好的取景和自定义锚点都不受影响。 */
+  setHouseY(y) {
+    const H = Math.max(-10, Math.min(30, Number(y) || 0));
+    const d = H - (this.houseY || 0);
+    this.houseY = H;
+    if (d === 0) return H;              // 重放背景但高度没变：不动相机
+    if (this.root) this.root.position.y = H;
+    if (this.center) this.center.y = H + 1;
+    if (this.controls && this.camera) {
+      this.camera.position.y += d;
+      this.controls.target.y += d;
+      this.controls.update();
+    }
+    return H;
+  },
+
   /* ---- 旋转锚点 ---- */
 
-  /* 屏幕坐标(clientX/Y) → 地面(y=0 平面)交点；视线不与地面相交时返回 null */
+  /* 屏幕坐标(clientX/Y) → 锚点。优先用真实几何交点（山顶平台 / 坡面 / 房屋地板），
+   * 让「长按选中的那个点」的高度就是锚点高度；没打中任何表面时回退到房屋基准面 y=houseY。
+   * 不可见的拾取热球（material.visible=false）不算表面，避免锚点莫名落在半空的热球上。 */
   groundPoint(clientX, clientY) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(
@@ -275,15 +380,28 @@ const View3D = {
       -((clientY - rect.top) / rect.height) * 2 + 1
     );
     this.raycaster.setFromCamera(ndc, this.camera);
+    const targets = [];
+    if (this.backdrop) targets.push(this.backdrop);
+    if (this.root) targets.push(this.root);
+    const hits = targets.length ? this.raycaster.intersectObjects(targets, true) : [];
+    const inOverlay = (o) => {
+      for (let p = o; p; p = p.parent) if (p.name === 'onData-overlay') return true;
+      return false;
+    };
+    const solid = hits.find((h) => h.object && h.object.material
+      && h.object.material.visible !== false && !inOverlay(h.object));
+    if (solid) return solid.point.clone();
     const p = new THREE.Vector3();
-    return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p) ? p : null;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(this.houseY || 0));
+    return this.raycaster.ray.intersectPlane(plane, p) ? p : null;
   },
 
-  /* 重设旋转锚点（自动旋转/轨道都绕它转）；锚点吸附到地面 y=0，带脉冲圆环反馈 */
+  /* 重设旋转锚点（自动旋转/轨道都绕它转）；锚点高度 = 选中表面的高度，带脉冲圆环反馈 */
   setAnchor(pos) {
     if (!pos) return false;
     const lim = (n) => Math.max(-200, Math.min(200, n));
-    this.controls.target.set(lim(pos.x), 0, lim(pos.z));
+    const limY = (n) => Math.max(-60, Math.min(80, n));
+    this.controls.target.set(lim(pos.x), limY(pos.y == null ? this.houseY : pos.y), lim(pos.z));
     this.controls.update();
     this.anchorPulse(this.controls.target);
     return true;
@@ -306,7 +424,7 @@ const View3D = {
       new THREE.MeshBasicMaterial({ color: 0x2f7bff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false })
     );
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(pos.x, 0.04, pos.z);
+    mesh.position.set(pos.x, (pos.y || 0) + 0.04, pos.z);
     this.scene.add(mesh);
     this._anchorFx = { mesh, t: 0 };
   },
@@ -612,7 +730,9 @@ const View3D = {
       const base = (window.PluginEngine && PluginEngine.labelBaseY)
         ? PluginEngine.labelBaseY(L.type, d.style) : null;
       const anchorY = base != null ? base : this.devY(d, L.type);
-      v.set(d.x, anchorY + off, d.y).project(this.camera);
+      /* 标签是 DOM、不在 root 子树里，手工拼世界坐标时要补上房屋基准高度 H，
+       * 否则房屋抬到山顶后标签会留在山脚。设备/家具本身由 root 整体抬升，不用单独加。 */
+      v.set(d.x, (this.houseY || 0) + anchorY + off, d.y).project(this.camera);
       if (v.z > 1) { el.style.display = 'none'; return; }
       el.style.display = '';
       el.style.left = ((v.x + 1) / 2 * w) + 'px';

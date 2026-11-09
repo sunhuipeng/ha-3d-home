@@ -95,7 +95,9 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 /* 背景插件面板: 按插件分组，图标+文字（不做实时预览） */
 .bg-groups { padding: 10px 14px 14px; max-height: 62vh; overflow-y: auto; }
 .bg-group { margin-bottom: 14px; }
-.bg-group-hd { font-size: 11px; color: var(--ink2); opacity: .75; margin-bottom: 7px; letter-spacing: .3px; }
+.bg-group-hd { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink2); margin-bottom: 7px; letter-spacing: .3px; }
+.bg-group-hd .hd-name { opacity: .75; }
+.bg-group-hd .bz { flex: none; font-style: normal; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 5px; letter-spacing: 0; }
 .bg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .bg-grid button {
   display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 10px;
@@ -105,7 +107,7 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 .bg-grid button .ic { flex: none; font-size: 15px; line-height: 1; }
 .bg-grid button .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bg-grid button .bz { flex: none; font-style: normal; font-size: 10px; line-height: 1; padding: 3px 4px; border-radius: 5px; background: #e8f1ff; color: #2b6fd6; }
-.bz.cus { background: #fff1e0; color: #c26a00; }   /* 来自 custom/ 的自定义背景 */
+.bz.cus { background: #fff1e0; color: #c26a00; }   /* 来自 custom/ 的自定义插件：背景面板显示在插件名右边 */
 .bg-grid button:hover { border-color: #c9d8f5; background: #f6f9ff; }
 .bg-grid button.active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600; }
 

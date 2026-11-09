@@ -1,7 +1,9 @@
 services:
   ha-3d-home:
     build: .
-    # 构建镜像发布后可改为 image: your-registry/ha-3d-home:latest
+    # 用内网仓库镜像: 删掉上面的 build: .，把下面一行改成
+    # image: 192.168.31.16:4000/sunhuipeng/ha-3d-home:latest
+    # 然后 docker compose pull && docker compose up -d
     image: ha-3d-home:latest
     container_name: ha-3d-home
     restart: unless-stopped

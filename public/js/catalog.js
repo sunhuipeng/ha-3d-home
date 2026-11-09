@@ -275,6 +275,11 @@ function maxFloorSize(p) {
 
 function serializeProject(p) {
   if (!p || !Array.isArray(p.floors) || !p.floors.length) return null;
+  /* 保存前再归一一次：老存档里按样式分散的 backgroundFields 合并成插件级 key，
+   * 保证写进 data/project.json 的始终是「一个插件一把 key」（fetchProject 读档时也会做）。 */
+  if (window.PluginEngine && PluginEngine.migrateProjectBg && p.settings) {
+    PluginEngine.migrateProjectBg(p.settings);
+  }
   /* 早期版本抄在实例上的展示字段（名称/尺寸/颜色等，现由目录或 HA 解析）——一律不复刻 */
   const LEGACY_KEYS = ['name', 'w', 'd', 'h', 'color'];
   const S = (v) => (typeof v === 'string' ? v : '');
@@ -389,7 +394,8 @@ function serializeProject(p) {
     settings: {
       background: S(st.background),
       backgroundOptions: optObj(st.backgroundOptions) || {},
-      /* 背景 onData 的实体绑定: { '<插件id>:<背景id>': { 字段key: entityId } } */
+      /* 背景 onData 的实体绑定: { '<插件id>': { 字段key: entityId } } —— 同一插件所有样式共用。
+       * 背景参数 backgroundOptions 仍按 '<插件id>:<样式id>' 存（各样式默认值不同）。 */
       backgroundFields: optObj(st.backgroundFields) || {},
       weatherEntity: S(st.weatherEntity),
     },

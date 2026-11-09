@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HA 3D Home · 编辑</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/style.css?v=10">
+<link rel="stylesheet" href="/style.css?v=11">
 <style>
   /* 启动图: 覆盖 JS/CSS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
   #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
@@ -113,14 +113,11 @@
     <!-- 右侧属性栏（2D/3D 预览均保留） -->
     <aside id="sidePanel" v-if="cur">
 
-      <!-- 未选中: 楼层/项目设置 -->
-      <!-- 未选中 / 选中墙体: 楼层设置（墙没有可编辑属性，选中只做高亮 + Delete 删除） -->
-      <template v-if="!selection || selection.kind === 'wall'">
-        <div class="sp-title">楼层设置</div>
-        <div class="sp-sec"><h4>项目</h4>
-          <div class="sp-row"><label>名称</label><input :value="project.name" @change="setProjectName($event.target.value)"></div>
-        </div>
-        <!-- 3D 墙面（按楼层记忆） -->
+      <!-- 左侧「背景」工具激活时的专用面板：背景样式参数 + 实体绑定。
+           从「楼层设置」里独立出来，只有选中左侧背景 tab 才出现；切回其它工具恢复楼层设置/选中属性。 -->
+      <template v-if="tool === 'backdrop'">
+        <div class="sp-title">背景设置</div>
+        <!-- 3D 墙面（按楼层记忆）：从「楼层设置」迁入，和背景一起调最顺手 -->
         <div class="sp-sec"><h4>3D 墙面</h4>
           <div class="sp-row"><label>不透明度</label>
             <input type="range" min="0" max="100" step="5" :value="cur.wallOpacity != null ? cur.wallOpacity : 45" @input="setWallOpacity(parseFloat($event.target.value))">
@@ -128,7 +125,6 @@
           </div>
           <div class="sp-tip">拖动实时预览；0 全透明，45 半透明可看见室内，100 不透明</div>
         </div>
-        <!-- 背景插件属性（点左侧「背景」工具即回到这里；也可选中背景后在空白处单击） -->
         <div class="sp-sec" v-if="bgMeta">
           <h4>背景 · {{ bgMeta.icon }} {{ bgMeta.name }}</h4>
           <div class="bind-meta">
@@ -141,11 +137,12 @@
             <option-row :o="o" @set="setBgOpt"></option-row>
           </div>
           <div class="sp-tip">{{ bgMeta.hz ? '动态背景：引擎按 ' + bgMeta.hz + 'Hz 节流刷新，改参数即时重绘' : '静态背景：只在切换或房屋尺寸变化时绘制一次（零每帧开销）' }}</div>
+          <div class="sp-tip">在左侧「背景」面板切换样式，选择即生效；离地高度可设为负值（低洼）</div>
         </div>
-
-        <!-- 背景插件：动态实体字段绑定（def.fields 声明 + 顶层 onData 回调）。
-             与设备/门窗的「实体绑定」同款区块，但值存 settings.backgroundFields、不落在实例上。 -->
-        <div class="sp-sec" v-if="bgFieldList.length"><h4>背景 ·实体绑定 </h4>
+        <div class="sp-sec" v-else>
+          <div class="sp-tip">当前是「纯色 + 网格」，没有背景插件参数。在左侧「背景」面板选一个样式后，样式参数与实体绑定会出现在这里。</div>
+        </div>
+        <div class="sp-sec" v-if="bgFieldList.length"><h4>背景 · 实体绑定</h4>
           <div class="sp-field" v-for="f in bgFieldList" :key="'bf-' + f.key">
             <div class="sp-field-hd">
               <label>{{ f.label || f.key }}</label>
@@ -157,7 +154,16 @@
           </div>
           <div class="sp-tip">绑定的实体状态变化时自动回调插件顶层 onData(fields, api)；静态背景也能响应。未绑定或暂无数据时由插件自己回退</div>
         </div>
+      </template>
 
+      <!-- 未选中: 楼层/项目设置 -->
+      <!-- 未选中 / 选中墙体: 楼层设置（墙没有可编辑属性，选中只做高亮 + Delete 删除） -->
+      <template v-else-if="!selection || selection.kind === 'wall'">
+        <div class="sp-title">楼层设置</div>
+        <div class="sp-sec"><h4>项目</h4>
+          <div class="sp-row"><label>名称</label><input :value="project.name" @change="setProjectName($event.target.value)"></div>
+        </div>
+        <!-- 3D 墙面与背景插件的参数/实体绑定已迁到「背景设置」面板（左侧选中「背景」工具时出现） -->
         <div class="sp-sec"><h4>楼层</h4>
           <div class="sp-row"><label>名称</label><input :value="cur.name" @change="cur.name = $event.target.value"></div>
           <div class="sp-row"><label>层高</label><input type="number" step="0.1" min="2" max="6" :value="cur.height" @input="setFloorHeight($event.target.value, 'input')" @change="setFloorHeight($event.target.value, 'change')"></div>
@@ -315,7 +321,7 @@
         </template>
 
         <!-- 实体绑定: 设备/门窗同一套，按当前样式所属插件的 fields 声明渲染（selFields 按 kind 分派） -->
-        <div class="sp-sec" v-if="selFields.length"><h4>实体绑定</h4>
+        <div class="sp-sec" v-if="selFields.length"><h4>拓展·实体绑定</h4>
           <div class="sp-field" v-for="f in selFields" :key="f.key">
             <div class="sp-field-hd">
               <label>{{ f.label }}</label>
@@ -388,15 +394,15 @@
     <div class="flyout-head">背景 <button class="close" @click="setTool('select', true)">×</button></div>
     <div class="bg-groups">
       <div class="bg-group" v-for="g in bgGroups" :key="g.plugin">
-        <div class="bg-group-hd">{{ g.name }}</div>
+        <div class="bg-group-hd"><span class="hd-name">{{ g.name }}</span><i class="bz cus" v-if="g.custom">自定义</i></div>
         <div class="bg-grid">
           <button v-for="b in g.items" :key="b.id" :class="{active: bgStyle === b.id}" :title="b.name + (b.hz ? ' · 动态 ' + b.hz + 'Hz' : ' · 静态')" @click="setBackground(b)">
-            <span class="ic">{{ b.icon }}</span><span class="nm">{{ b.name }}</span><i class="bz cus" v-if="b.custom">自定义</i><i class="bz" v-if="b.hz">动</i>
+            <span class="ic">{{ b.icon }}</span><span class="nm">{{ b.name }}</span><i class="bz" v-if="b.hz">动</i>
           </button>
         </div>
       </div>
       <div class="bg-group">
-        <div class="bg-group-hd">默认</div>
+        <div class="bg-group-hd"><span class="hd-name">默认</span></div>
         <div class="bg-grid">
           <button :class="{active: !bgStyle}" title="无背景插件时使用纯色 + 网格" @click="setBackground(null)">
             <span class="ic">▦</span><span class="nm">纯色 + 网格</span>
@@ -405,7 +411,7 @@
       </div>
       <div class="sp-tip" v-if="!bgGroups.length">未发现背景插件 · 把插件放到 assets/plugins/&lt;id&gt;/（kind: background）后重启即可出现在这里</div>
       <template v-else>
-        <div class="sp-tip">「动」= 动态背景，由插件声明刷新率驱动；其余为静态，只在切换/尺寸变化时绘制一次。选中后在空白处单击，可在右侧属性栏调参</div>
+        <div class="sp-tip">「动」= 动态背景，由插件声明刷新率驱动；其余为静态，只在切换/尺寸变化时绘制一次。选中后到右侧「背景设置」面板调样式参数与实体绑定</div>
         <div class="sp-tip bg-live-tip">背景在 3D 演示模型中预览，选择即生效</div>
       </template>
     </div>
@@ -554,12 +560,12 @@
 <script src="/vendor/GLTFLoader.js"></script>
 <script src="/vendor/vue.global.prod.js"></script>
 <script src="/js/ha.js?v=5"></script>
-<script src="/js/catalog.js?v=10"></script>
+<script src="/js/catalog.js?v=11"></script>
 <script src="/js/hud.js?v=1"></script>
 <script src="/js/editor.js?v=14"></script>
 <script src="/js/recode.js?v=3"></script>
-<script src="/js/plugins.js?v=21"></script>
-<script src="/js/view3d.js?v=15"></script>
-<script src="/js/app.js?v=24"></script>
+<script src="/js/plugins.js?v=26"></script>
+<script src="/js/view3d.js?v=18"></script>
+<script src="/js/app.js?v=28"></script>
 </body>
 </html>

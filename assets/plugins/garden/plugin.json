@@ -1,7 +1,0 @@
-{
-  "id": "garden",
-  "name": "庭院铺装",
-  "version": "1.2.0",
-  "kind": "background",
-  "description": "内置背景插件：庭院类地面背景——鹅卵石 / 青砖 / 白砂枯山水（扁平，tile 内部铺满）、溪水（动态，12Hz 波纹刷新）、汀步小径（立体，ctx.plane 底图 + 石板撒点）。apply 统一返回 { group }"
-}

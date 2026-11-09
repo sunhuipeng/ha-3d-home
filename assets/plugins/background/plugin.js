@@ -31,8 +31,12 @@
  * ============================================================================
  * 一、ctx —— 引擎递给你的「素材包」（apply(ctx) 的参数）
  * ============================================================================
- * ctx = { THREE, size, house, safe, options, refresh, plane }
+ * ctx = { THREE, size, house, safe, houseY, options, refresh, plane }
  *
+ *   houseY  房屋地板相对背景基准面 y=0 的高度（米，可为负）= 样式位置参数 houseY。
+ *           引擎据此把整栋房屋抬起来（设备/家具高度仍相对房屋），插件据此画脚下平台；
+ *           与 ctx.options.houseY / ctx.house.y / ctx.safe.houseY 是同一个值。
+ *   plane(src, sizeM?, hole?)  第三参 hole={x0,x1,z0,z1} 可挖矩形洞，供 houseY<0 的低洼用。
  *   THREE    three.js 命名空间。一律用 ctx.THREE 或全局 window.THREE，
  *            不要自己再引一份 CDN，否则会出现两套互不认识的类和常量。
  *   size     建议的画布边长（当前 512 像素）。画贴图时照这个开 canvas：
@@ -69,6 +73,8 @@
  *                   base.position.set(house.cx, -0.05, house.cy)  ← 只在你故意想让平面跟着房子时用
  *                 引擎给的 ctx.plane() 已经把平面中心放在背景中心，直接 add 就是对的。
  *   floors        有墙的楼层数（没画墙的层不算）
+ *   y / h / topY  房屋地板高度 / 实体高度 / 屋顶高度（米）。y 就是 houseY，可为负；
+ *                 只是高度信息，不改变任何水平方向的字段或判定。
  *   hash          尺寸指纹（字符串）。墙/楼层变了它才会变。
  *                 引擎发现它变化时会自动重放背景（你不需要自己监听重建时机）。
  *                 拿它当随机种子，可以让「同一栋房子每次重建，草的位置完全一样」：
@@ -86,6 +92,9 @@
  *   x0,x1,y0,y1   禁放矩形的四条边（= 上面 house 的四条边各向外 ±inner）
  *   forbidden(x, z)   传平面坐标，返回 true = 落在禁放区里（会压到房子，别放）
  *   allowed(x, z)     传平面坐标，返回 true = 在房子外面、且离房屋中心不超过 45m
+ *   houseY/baseY      房屋地板高度（米，可为负）；houseH = 实体高；topY = 屋顶高度
+ *   ⚠ 上面四个高度字段只是**额外信息**，水平方向 forbidden/allowed 的 2D 判定一字未动。
+ *     房屋悬空时想在房子底下画支撑柱/洞穴，自己比较 y < houseY，并主动绕开 allowed(x,z)。
  *
  *   典型用法（撒任何东西之前先问一句）：
  *     if (ctx.safe && !ctx.safe.allowed(x, z)) continue;   // 这个点不合适，换一个
@@ -180,6 +189,9 @@
  *     retile(cv, tile, n) / fullPlane(tile, n)   tile 平铺 n×n / 铺满 2048² 大图
  *     flat(ctx, cv, name?)            扁平背景组装：group + ctx.plane(整图)
  *     repeatOpt(def)                  「颗粒密度」参数条目（key 固定 repeat）
+ *     positionOpts(xzRange?, houseYDef?)  三条位置参数 offsetX / offsetZ / houseY
+ *                                （离地高度，默认 houseYDef，可为负；见山顶平台 / 下沉庭院样式）
+ *     offsetOpts(range)              旧版两条水平偏移，仍兼容
  *   内置 background 与 custom/plugins/garden 都在用，直接参考写法即可。
  *
  * ============================================================================
@@ -187,6 +199,11 @@
  * ============================================================================
  *   · 地面高度：ctx.plane() 已经把平面压在 y = -0.05（略低于楼层地板，避免 z-fighting）。
  *     自己加的立体体块贴着地面放即可（y=0 起步）。
+ *     ⚠ 但房屋地板可能在 y=houseY：立体体块一律写成 houseY + 相对高度，
+ *       houseY<0 时用 ctx.plane(cv, null, hole) 挖洞，否则地面会盖住下沉的房子。
+ *   · 两个水平面之间必须留 PLANE_GAP（0.25m）以上的间隙：房屋地板顶面 H、
+ *     地台底面 H-0.12、贴图地面 -0.05、平台顶面、坑底都不能贴到 0.05m 以内，
+ *     否则整片斜条纹闪面（z-fighting）。宁可留缝，也别让两个平面共面。
  *   · apply() 是同步调用的：里面不要 fetch 大文件或等异步结果。
  *     要用图片素材，就在插件加载时预加载成 Image 存起来，apply 里直接画进 canvas。
  *
@@ -199,9 +216,13 @@
  * 引擎自动把专属子树 api.overlayGroup 挂在背景 group 下，重放时随 group 一起销毁重建；
  * 本插件只往里放一块朝向相机的「天气牌」，地面/水波仍归各自的 apply 管，互不干扰。
  * **静态背景（refresh:0）同样生效**；未绑定实体或 HA 还没连上时牌子自动隐藏，
- * 原有 7 种地面的外观零改动。
+ * 原有地面的外观零改动。
+ * ⚠ 绑定是**插件级**的：`fields` 声明在注册对象顶层，值存
+ *   `settings.backgroundFields['<插件id>']` 一把 key，本插件所有样式共用一份；
+ *   从「石板」切到「木栈道 / 草原 / 山顶平台…」不用重绑，实体不会丢。设备/门窗
+ *   同理（值在实例 obj[key] 上），只有背景手工参数 options 才按样式分别存。
  *
- * 验证步骤（home 编辑页）：选任意一个背景 → 右侧「实体绑定 · 背景」把
+ * 验证步骤（home 编辑页）：选任意一个背景 → 右侧「背景设置 · 实体绑定」把
  *   · 天气实体 → weather.home（演示模式下就是 partlycloudy / 18°C）
  *   · 数值实体 → 任意 sensor.*（演示模式下 sensor.living_temp 每 3 秒变一次）
  * 绑完房屋右上方的空中立刻出现天气牌，数值会自己刷新；接真实 HA 改天气状态，顶部色条与图标同步变。
@@ -217,6 +238,13 @@
  * 已收敛到 PluginEngine.bgKit（与 garden 插件共用），本文件只保留本插件特有的画法。 */
 
 const K = PluginEngine.bgKit;
+
+/* 任意两个水平面之间的最小间隙（米）。
+ * ⚠ 立体背景最容易翻车的就是「两个平面几乎共面」：房屋地板顶面 y=houseY、
+ *   地台底面 y=houseY-0.12、平台顶面、坑底、贴图地面 y=-0.05……
+ *   只要贴到 0.05m 以内就会大面积条纹/摩尔纹（z-fighting）。
+ *   本插件所有水平面都按这个量错开，宁可留一条看得见的缝，也不要共面。 */
+const PLANE_GAP = 0.25;
 
 /* 草叶: 短线段，跨边界补笔保证平铺无断裂 */
 function bgBlades(c, colors, count) {
@@ -565,8 +593,9 @@ PluginEngine.register({
   kind: 'background',
   name: '户外地面',
 
-  /* 顶层动态实体订阅（第七节）：所有 7 种背景共用这一份声明，值按背景 id 独立存
-   * 在 settings.backgroundFields['background:<样式id>'] 里。options 是手工参数，别混。 */
+  /* 顶层动态实体订阅（第七节）：所有样式共用这一份声明，绑定的实体也共用一把 key
+   * —— settings.backgroundFields['background']，切样式不丢。
+   * options 是按样式分别存的手工参数，别混。 */
   fields: [
     { key: 'weather', label: '天气实体', domains: ['weather'], placeholder: 'weather.home',
       tip: '绑定 weather.* 实体；状态或温度变化会重画天气牌，静态背景同样生效' },
@@ -576,61 +605,129 @@ PluginEngine.register({
   /* 背景样式列表：与门窗/设备插件统一叫 styles（每项 apply(ctx) → { group }） */
   styles: [
     /* --- 扁平背景: 平面网格 + 画好的整图（tile 铺满在插件内部完成） --- */
-    { id: 'grass', name: '草地', icon: '🌿', refresh: 0,
-      options: [K.repeatOpt(26), ...K.offsetOpts()],
-      apply: (ctx) => ({ group: K.flat(ctx, K.fullPlane(bgGrass(256), (ctx.options || {}).repeat), 'background:flat') }) },
-
-    { id: 'sand', name: '沙滩', icon: '🏖', refresh: 0,
-      options: [K.repeatOpt(22), ...K.offsetOpts()],
-      apply: (ctx) => ({ group: K.flat(ctx, K.fullPlane(bgSand(), (ctx.options || {}).repeat), 'background:flat') }) },
-
     { id: 'stone', name: '石板', icon: '🧱', refresh: 0,
-      options: [K.repeatOpt(20), ...K.offsetOpts()],
+      options: [K.repeatOpt(20), ...K.positionOpts()],
       apply: (ctx) => ({ group: K.flat(ctx, K.fullPlane(bgStone(), (ctx.options || {}).repeat), 'background:flat') }) },
 
     { id: 'deck', name: '木栈道', icon: '🪵', refresh: 0,
-      options: [K.repeatOpt(18), ...K.offsetOpts()],
+      options: [K.repeatOpt(18), ...K.positionOpts()],
       apply: (ctx) => ({ group: K.flat(ctx, K.fullPlane(bgDeck(), (ctx.options || {}).repeat), 'background:flat') }) },
 
-    { id: 'snow', name: '雪地', icon: '❄️', refresh: 0,
-      options: [K.repeatOpt(24), ...K.offsetOpts()],
-      apply: (ctx) => ({ group: K.flat(ctx, K.fullPlane(bgSnow(), (ctx.options || {}).repeat), 'background:flat') }) },
 
-    /* --- 动态扁平背景: 水面按 refresh 频率重绘 tile 再铺满，自己持有贴图引用标脏 --- */
-    { id: 'water', name: '水面', icon: '💧', refresh: 15,
-      options: [
-        K.repeatOpt(16),
-        { key: 'speed', label: '流速', type: 'range', min: 0, max: 3, step: 0.1, def: 1 },
-        ...K.offsetOpts(),
-      ],
-      apply(ctx) {
-        const T = ctx.THREE, o = ctx.options || {};
-        const tile = bgWater(0);                          // 无缝 tile: 动态时只重画这一小块
-        const n = Math.max(1, Math.min(40, Math.round(o.repeat || 20)));
-        const canvas = K.fullPlane(tile, n);
-        const tex = new T.CanvasTexture(canvas);
-        const g = new T.Group();
-        g.name = 'background:water';
-        g.add(ctx.plane(tex));
-        return {
-          group: g,
-          /* 引擎按 refresh=15 调这个: 重画 tile → 内部重新铺满 → 贴图标脏 */
-          update(t) {
-            bgWater(t * (0.5 + (o.speed != null ? o.speed : 1) * 1.5), tile);
-            K.retile(canvas, tile, n);
-            tex.needsUpdate = true;
-          },
-        };
-      } },
 
     /* --- 立体背景: 底图平面 + 真 3D 草丛体块（同一个 group，扁平 + 立体混搭） --- */
     { id: 'meadow', name: '草原（立体）', icon: '🌾', refresh: 0,
       options: [
         { key: 'clumps', label: '草丛数量', type: 'range', min: 0, max: 160, step: 10, def: 70 },
         { key: 'size', label: '草丛大小', type: 'range', min: 0.5, max: 2, step: 0.1, def: 1 },
-        ...K.offsetOpts(),
+        ...K.positionOpts(),
       ],
       apply(ctx) { return { group: bgBuildMeadow(ctx) }; } },
+
+    /* --- 立体背景 + 房屋基准高度：山顶平台（houseY 默认 6m） ---
+     * 引擎按 houseY 把整栋房屋抬到 y=6；插件按同一个值画山与山顶平台。
+     * ⚠ 水平面一律按 PLANE_GAP 错开：地面 -0.05 → 山体顶面 H-2G → 平台顶面 H-G
+     *   → 房屋地板顶面 H。绝不让两个平面落在同一高度，否则大面积条纹闪面。
+     * 山脚的草地平面仍留在 y=-0.05。 */
+    { id: 'hill', name: '山顶平台（立体）', icon: '⛰', refresh: 0,
+      options: [...K.positionOpts(30, 6)],
+      apply(ctx) {
+        const T = ctx.THREE;
+        const h = ctx.house || { cx: 0, cy: 0, w: 8, d: 8 };
+        const H = Math.max(-10, Math.min(30, Number(ctx.options.houseY) || 0));
+        const G = PLANE_GAP;
+        const g = new T.Group();
+        g.name = 'background:hill';
+        g.add(ctx.plane(K.fullPlane(bgGrass(256), 26)));        // 山脚地面 y=-0.05
+        const mountTop = Math.max(0.5, H - 2 * G);              // 山体顶面（比平台低 G）
+        /* 平台 / 山体尺寸跟着当前楼层的房屋包围盒走：不同楼层户型大小不一样，
+         * 写死 15×15 会让切到更大楼层后「房屋画在平台外面」。切层时引擎会重放
+         * 背景（view3d.build 的 bgKey 含楼层号），这里每次 apply 都按 ctx.house.w/d
+         * 重算即可。最小值 15 保留原户型下的观感；四棱台旋转 45° 后顶面是轴对齐
+         * 正方形（边长 = R*√2），所以 R >= max(platW, platD)/√2 才能托住平台。 */
+        const pad = 2;
+        const platW = Math.max(15, (Number(h.w) || 8) + pad * 2);
+        const platD = Math.max(15, (Number(h.d) || 8) + pad * 2);
+        const topR = Math.max(11, Math.max(platW, platD) / Math.SQRT2 + 1);
+        const botR = topR + 7;
+        const mount = new T.Mesh(
+          new T.CylinderGeometry(topR, botR, mountTop, 4, 1),    // 四棱台 = 山体，底面 y=0
+          new T.MeshLambertMaterial({ color: 0x7f9a5b })
+        );
+        mount.rotation.y = Math.PI / 4;
+        mount.position.set(h.cx, mountTop / 2, h.cy);
+        g.add(mount);
+        const platformTop = H - G;                              // 比房屋地板低 G
+        const platformH = 0.3;
+        const top = new T.Mesh(
+          new T.BoxGeometry(platW, platformH, platD),
+          new T.MeshLambertMaterial({ color: 0x9bb87a })
+        );
+        /* 平台底面比山体顶面再低 0.05m，嵌进山体一点，侧面不露缝 */
+        top.position.set(h.cx, platformTop - platformH / 2, h.cy);
+        g.add(top);
+        /* 房屋悬空时「房子底下能画东西」的示例：四根柱子从 y=0 撑到平台底。
+         * safe.allowed(x,z) 仍会把房屋水平投影判为禁放，所以这里直接按 house 包围盒摆，
+         * 由插件自己比较高度 —— 引擎只给高度信息，不替插件决定画什么。 */
+        const pillarH = platformTop - platformH;
+        if (pillarH > 0.5) {
+          const mat = new T.MeshLambertMaterial({ color: 0x8a7a66 });
+          const r = Math.max(2, Math.min(h.w || 8, h.d || 8) / 2 - 1);
+          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+            const p = new T.Mesh(new T.CylinderGeometry(0.35, 0.45, pillarH, 8), mat);
+            p.position.set(h.cx + sx * r, pillarH / 2, h.cy + sz * r);
+            g.add(p);
+          });
+        }
+        return { group: g };
+      } },
+
+    /* --- 立体背景 + 负高度：下沉庭院（houseY 默认 -3m） ---
+     * 地面平面固定在 y=-0.05，房子沉到基准面以下会被盖住，所以用 ctx.plane 的
+     * 第三参 hole 挖掉房屋占地的那一块，再自己补坑壁与坑底。 */
+    { id: 'basin', name: '下沉庭院（立体）', icon: '🕳', refresh: 0,
+      options: [...K.positionOpts(30, -3)],
+      apply(ctx) {
+        const T = ctx.THREE;
+        const h = ctx.house || { minX: -4, maxX: 4, minY: -4, maxY: 4, cx: 0, cy: 0 };
+        const H = Math.max(-10, Math.min(30, Number(ctx.options.houseY) || 0));
+        const pad = 1.5;
+        const hole = {
+          x0: h.minX - pad, x1: h.maxX + pad,
+          z0: h.minY - pad, z1: h.maxY + pad,
+        };
+        const w = hole.x1 - hole.x0, d = hole.z1 - hole.z0;
+        const cx = (hole.x0 + hole.x1) / 2, cz = (hole.z0 + hole.z1) / 2;
+        const G = PLANE_GAP;
+        /* 水平面错开：地面 -0.05 → 坑壁顶面 0.2 → 房屋地板顶面 H → 地台底面 H-0.12
+         * → 坑底 H-G → 坑壁底面 H-G-0.15。相邻水平面至少差 0.13m，不共面。 */
+        const floorY = H - G;
+        const wallTop = 0.2;
+        /* 防御：把 houseY 拖成正值时坑会消失，别让墙高变成负数 */
+        const wallBottom = Math.min(floorY - 0.15, wallTop - 0.3);
+        const wallH = wallTop - wallBottom;
+        const g = new T.Group();
+        g.name = 'background:basin';
+        g.add(ctx.plane(K.fullPlane(bgStone(), 20), null, hole));
+        const wallMat = new T.MeshLambertMaterial({ color: 0x8d8375 });
+        const wall = (sx, sz, x, z) => {
+          const m = new T.Mesh(new T.BoxGeometry(sx, wallH, sz), wallMat);
+          m.position.set(x, (wallTop + wallBottom) / 2, z);
+          g.add(m);
+        };
+        wall(w + 0.6, 0.3, cx, hole.z0);
+        wall(w + 0.6, 0.3, cx, hole.z1);
+        wall(0.3, d + 0.6, hole.x0, cz);
+        wall(0.3, d + 0.6, hole.x1, cz);
+        const floor = new T.Mesh(
+          new T.PlaneGeometry(w, d),
+          new T.MeshLambertMaterial({ color: 0xb3a78e })
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.set(cx, floorY, cz);   // 比房屋地台底面低 0.13m，留出间隙
+        g.add(floor);
+        return { group: g };
+      } },
   ],
 
   /* 顶层数据通道：只负责天气牌这一小块元素，与上面每个 apply 的地面 / 水波完全隔离。
@@ -646,9 +743,11 @@ PluginEngine.register({
       g.userData.weatherBadge = badge;
       /* overlay 的局部原点 = 背景中心；house.cx/cy 是房屋相对背景中心的偏移，
        * 照它摆牌子，不管 offsetX/offsetZ 调成多少，牌子都跟在房屋右上方。
-       * 默认机位是 (9,10,11) 俯视，(+4, 5, -3) 落在画面里且不会压住屋顶。 */
+       * 高度必须跟着 houseY 走：房屋抬到山顶 / 沉进低洼时，牌子仍浮在屋顶上方，
+       * 而不是留在基准面 y=0 穿进山体。默认机位俯视，(+4, H+5, -3) 不压屋顶。 */
       const h = ctx.house || { cx: 0, cy: 0 };
-      badge.sprite.position.set(h.cx + 4, 5, h.cy - 3);
+      const H = Number(ctx.houseY != null ? ctx.houseY : (ctx.options && ctx.options.houseY)) || 0;
+      badge.sprite.position.set(h.cx + 4, H + 5, h.cy - 3);
       g.add(badge.sprite);
     }
     const w = (fields && fields.weather) || null;
