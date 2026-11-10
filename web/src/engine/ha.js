@@ -3,9 +3,8 @@
  * 流程: 连接 /api/websocket → auth(长期令牌) → subscribe_entities 实时推送
  * 支持 get_states / call_service；未配置 HA 时进入演示模式（模拟实体）。
  */
-'use strict';
 
-const HA = {
+export const HA = {
   ws: null,
   url: '',
   token: '',

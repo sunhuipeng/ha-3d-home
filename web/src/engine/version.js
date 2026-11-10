@@ -14,7 +14,6 @@
  *
  * 刻意不带 ?v= 缓存版本号：走 ETag 协商，本文件将来改动也能自动生效。
  */
-'use strict';
 (function () {
   var version = '', appName = 'HA 3D Home';
 

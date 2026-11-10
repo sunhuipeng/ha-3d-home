@@ -6,21 +6,21 @@
 #   /custom         用户自定义模型与插件（结构同 assets: models/ plugins/ catalog.json），
 #                   镜像只建目录，永不写入，升级/重启不丢
 #
-# 内置 assets/seed 是镜像内部路径（/app 内相对路径默认值）；用户可见的挂载点用简洁的 /data /custom。
+# 前端构建：web/ 用 Vite 打包，产物（index.html / display.html / 资源）落到镜像的 public/，
+# 由后端 serveStatic 的 PUBLIC_DIR 默认根托管。bundle 资源目录改名为 public，
+# 与数据目录 /assets/、/custom/ 不冲突（serveStatic 只对这两个前缀走特殊根目录，其余都回
+# PUBLIC_DIR 根查找，所以 /public/*.js 会命中 /app/public/public/*，功能正常，只是镜像里多一层
+# 嵌套）。vite.config.js 不改，只在构建命令里传 --assetsDir public，前端默认 base 仍是 /，
+# dev 不受影响。
 
-# ---------- Stage 1: 静态资源压缩（css / js / json / html）----------
-# 压缩工具只装在这个构建阶段，运行时镜像仍是「零 npm 依赖」的纯 Node + 静态文件。
-# 只做语法级压缩、不改文件名，所以 index.html 里的 ?v=N 不用动。
-# 注意：脚本是「读 public/assets → 写 /out」，不原地覆盖；本地跑也一样只写 dist-min/。
-FROM node:22-alpine AS minify
-WORKDIR /src
-RUN npm init -y >/dev/null 2>&1 \
- && npm i --no-audit --no-fund --silent \
-      terser@5.36.0 html-minifier-terser@7.2.0 clean-css@5.3.3
-COPY scripts/minify-static.mjs ./scripts/
-COPY public ./public
-COPY assets ./assets
-RUN node scripts/minify-static.mjs --out /out public assets
+# ---------- Stage 1: 前端构建 ----------
+FROM node:22-alpine AS web-build
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+# bundle 资源目录改为 public，不与数据目录 /assets/、/custom/ 冲突（不改 vite.config.js）
+RUN npm run build -- --assetsDir static
 
 # ---------- Stage 2: 运行层 ----------
 FROM node:22-alpine
@@ -31,14 +31,22 @@ ENV NODE_ENV=production \
     PORT=8099 \
     HA3D_DATA_DIR=/data
 
-# 零 npm 依赖: 直接拷贝源码（服务端入口 server/index.js 与 server/ 各模块）+ 压缩过的内置资产
+# 服务端入口 server/ 与各模块；express 是唯一生产依赖
 COPY server ./server
 COPY package.json ./
-COPY --from=minify /out/public ./public
-COPY --from=minify /out/assets ./assets
-COPY deploy/seed/data ./seed/data
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN npm install --omit=dev --no-audit --no-fund
 
+# 前端构建产物 → public/（后端以 PUBLIC_DIR 为默认根托管；
+# 资源在 /public/ 下，不与数据目录 /assets/、/custom/ 冲突，也不会覆盖内置资产）
+COPY --from=web-build /web/dist ./public
+
+# 内置数据资产（模型 + 插件 + catalog）：直接打进镜像，升级镜像即升级资产
+COPY assets ./assets
+
+# 默认数据种子（config.json / project.json）
+COPY deploy/seed/data ./seed/data
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /data /custom
 
 VOLUME ["/data", "/custom"]

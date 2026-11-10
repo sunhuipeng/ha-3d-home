@@ -3,9 +3,11 @@
  * 网格吸附(0.1m) + 端点吸附；工具: 选择/平移/墙体/门/窗/家具/设备/贴图/背景
  * （删除不是工具: 选中后按 Delete 或点属性栏按钮）
  */
-'use strict';
+import { HA } from './ha.js';
+import { uid, furnSpec, itemDisplayName } from './catalog.js';
+import { PluginEngine } from './plugins.js';
 
-const Editor = {
+export const Editor = {
   canvas: null, ctx: null,
   ppm: 60,                 // 像素/米
   ox: 0, oy: 0,            // 平移偏移(像素)
@@ -1010,7 +1012,7 @@ const Editor = {
   },
 };
 
-function roundRect(ctx, x, y, w, h, r) {
+export function roundRect(ctx, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -1026,7 +1028,7 @@ function roundRect(ctx, x, y, w, h, r) {
  * 中间色，那块区域就点不中了。
  * 规则：不透明的颜色 → 全部换成这个元素的 id 色；半透明（alpha < 0.9）→ 什么都不画。
  * 于是「实体轮廓」参与命中、「半透明装饰」既不命中也不遮挡下层，与肉眼看到的一致。 */
-function pickCtx(ctx, color) {
+export function pickCtx(ctx, color) {
   const solid = color, blank = 'rgba(0,0,0,0)';
   return new Proxy(ctx, {
     get(t, k) {
@@ -1047,7 +1049,7 @@ function pickCtx(ctx, color) {
 }
 
 /* 颜色不透明度，#rgb/#rrggbb/rgb()/命名色 一律当 1，rgba()/#rrggbbaa 取 alpha */
-function colorAlpha(v) {
+export function colorAlpha(v) {
   if (typeof v !== 'string') return 1;   // 渐变 / 图案：按不透明处理
   const s = v.trim().toLowerCase();
   if (s.charAt(0) === '#') {
@@ -1065,8 +1067,8 @@ function colorAlpha(v) {
 
 /* uid() 已下沉到 catalog.js（大屏页也要用 buildDefaultProject，不能依赖本文件） */
 
-let spaceHeld = false;
-let shiftHeld = false;        // 画墙 / 拖墙端点时按住 = 正交锁定
+export let spaceHeld = false;
+export let shiftHeld = false;        // 画墙 / 拖墙端点时按住 = 正交锁定
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') spaceHeld = true;
   /* 按下 Shift 的那一刻鼠标没动 → 主动重绘一次，预览线与「水平/垂直」提示立即更新 */

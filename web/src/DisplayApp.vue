@@ -1,10 +1,104 @@
-/*
- * display.js — 展示大屏（独立页面，复用 ha.js / catalog.js / plugins.js / view3d.js 共享模块）
- * 长时间展示全屋状态: 3D 场景 + 实时数据 HUD + 自动旋转 + 断线自动重连
- */
-'use strict';
+<template>
+  <!-- 启动图: 覆盖 JS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 -->
+  <div id="boot">
+    <div class="b-logo">🏠</div>
+    <div class="b-name">HA 3D Home</div>
+    <div class="b-spin"></div>
+    <div class="b-tip">正在加载，请稍候…</div>
+  </div>
 
-const { createApp } = Vue;
+  <div id="display" v-cloak>
+    <div id="stage"></div>
+
+    <div class="d-hud" v-if="project && project.floors.length">
+      <div class="d-top">
+        <div class="d-title">
+          🏠 {{ project.name }}<a class="d-edit" href="/index.html" title="打开编辑器修改户型">编辑 ↗</a><span class="d-temp">{{ hudTemp }}</span><span class="tb-ver" data-app-version hidden></span>
+        </div>
+        <div class="d-subs"><span v-for="s in hudSubs" :key="s">{{ s }}</span></div>
+      </div>
+
+      <!-- 左侧: 标题下方的实时数据卡 -->
+      <div class="d-left" v-if="hudCards.length">
+        <div class="d-card" v-for="c in hudCards" :key="c.eid">
+          <div class="k">{{ c.name }}</div>
+          <div class="v">{{ c.value }}<small> {{ c.unit }}</small></div>
+        </div>
+      </div>
+
+      <!-- 右侧面板: 单一容器，内部卡片从上到下排列，容器整体纵向滚动 -->
+      <div class="d-panel">
+        <div class="d-card">
+          <div class="ov-row">
+            <span class="k">设备概览</span>
+            <span class="ov-num">{{ onCount }}<small> / {{ deviceTotal }}</small></span>
+          </div>
+          <div class="ov-bar"><i :style="{ width: onPct + '%' }"></i></div>
+        </div>
+
+        <div class="d-card card-sec" v-if="scenes.length">
+          <div class="k">场景</div>
+          <div class="sc-list">
+            <div class="sc-item" v-for="s in scenes" :key="s.eid">
+              <span class="nm" :title="s.name">{{ s.name }}</span>
+              <button class="sc-run" :class="{busy: sceneBusy[s.eid], ok: sceneDone[s.eid]}"
+                      :disabled="!!sceneBusy[s.eid]"
+                      :title="sceneBusy[s.eid] ? '执行中…' : (sceneDone[s.eid] ? '已执行' : '执行场景')"
+                      @click="runScene(s)">
+                <span v-if="sceneBusy[s.eid]" class="spin"></span>
+                <span v-else-if="sceneDone[s.eid]">✓</span>
+                <span v-else>▶</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-card card-sec" v-if="quickDevices.length">
+          <div class="k">快捷设备</div>
+          <div class="q-grid">
+            <button class="act-btn" :class="{on: q.on}" v-for="q in quickDevices" :key="q.eid" :title="q.name" @click="toggleQuick(q)">
+              <span class="ic">{{ q.icon }}</span><span class="tx">{{ q.name }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-floors" v-if="project.floors.length > 1">
+        <button v-for="(f, i) in project.floors" :key="f.id" :class="{active: i === floorIdx}" @click="selectFloor(i)">{{ f.name }}</button>
+      </div>
+
+      <div class="d-tools">
+        <button :class="{on: autoRotate}" @click="toggleRotate">⟳ 自动旋转</button>
+        <button :class="{on: showLabels}" @click="toggleLabels">🏷 标签</button>
+        <button @click="resetAnchor" title="长按画面可自定义旋转锚点；点此重置回房屋中心">◎ 重置锚点</button>
+        <button @click="fullscreen">⛶ 全屏</button>
+      </div>
+
+      <div class="d-status" :class="{on: haStatus.status === 'connected'}">
+        <span class="dot"></span>
+        {{ statusText }}
+      </div>
+
+      <div class="d-toast" v-if="toast">{{ toast }}</div>
+    </div>
+
+    <div class="d-empty" v-else>
+      <div style="font-size:40px">🏠</div>
+      <div>还没有户型数据</div>
+      <div style="opacity:.7;font-size:13px">请先到编辑器绘制户型并保存</div>
+      <a href="/">→ 打开编辑器</a>
+    </div>
+  </div>
+</template>
+
+<script>
+/*
+ * DisplayApp — 展示大屏（独立页面，复用 ha.js / catalog.js / plugins.js / view3d.js 共享模块）
+ * 长时间展示全屋状态: 3D 场景 + 实时数据 HUD + 自动旋转 + 断线自动重连
+ * 由 main-display.js 通过 createApp(DisplayApp).mount('#app') 挂载。
+ * 共享模块 HA / HUD / View3D / PluginEngine / loadCatalog / fetchProject / buildDefaultProject
+ * 等均为 public/js 中挂载到 window 的全局变量，此处直接引用，不另行 import。
+ */
 
 /* ---- 大屏视图状态层（统一按楼层 id 读写）----
    楼层自带稳定 id（catalog.js 的 newFloor → uid()）：取景记忆、旋转锚点、
@@ -172,8 +266,8 @@ function applyAnchor(f) {
   } catch (e) { /* WebGL / controls 不可用：不抛错，页面其它部分照常工作 */ }
 }
 
-createApp({
-    data() {
+export default {
+  data() {
     return {
       project: null,
       floorIdx: 0,
@@ -223,7 +317,6 @@ createApp({
       if (!t) return 0;
       return Math.max(0, Math.min(100, Math.round((this.onCount / t) * 100)));
     },
-    /* HA 场景（仅 scene 实体；当前楼层勾选的优先，未勾选时展示全部场景，无场景则卡片隐藏） */
     /* HA 场景: 严格按当前楼层勾选（cur.display.displayScenes）展示；
      * 该楼层未配置时列表为空，卡片自动隐藏（不再回退展示全部场景） */
     scenes() {
@@ -276,6 +369,15 @@ createApp({
   },
 
   methods: {
+    /* 由 mounted 在 Vue 挂载完成后调用；12s 兜底防止脚本异常时卡死在启动图 */
+    bootDone() {
+      const b = document.getElementById('boot');
+      if (!b) return;
+      b.style.opacity = '0';
+      b.style.pointerEvents = 'none';
+      setTimeout(() => { b.remove(); }, 260);
+    },
+
     async init() {
       await loadCatalog();   // 目录先于项目加载（家具形态解析需要）
       // 加载项目（编辑器保存的户型）；无保存数据时回退示例户型（fetchProject 在 catalog.js）
@@ -484,6 +586,92 @@ createApp({
     },
   },
 
-  mounted() { this.init(); },
-}).mount('#display');
-if (window.__bootDone) window.__bootDone();   // 挂载完成，移除启动图
+  mounted() {
+    this.init();
+    this.bootDone();
+    // 12s 兜底：脚本异常时强制移除启动图，不卡死在加载界面
+    setTimeout(() => this.bootDone(), 12000);
+  },
+};
+</script>
+
+<style>
+  body { background: #eef1f4; }
+  #stage { position: fixed; inset: 0; background: #fafbfd; }
+  #stage canvas { display: block; }
+  .d-hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  .d-top { position: absolute; left: 28px; top: 24px; color: #1f2733; }
+  .d-title { font-size: 26px; font-weight: 700; display: flex; align-items: baseline; gap: 14px; }
+  /* 版本号胶囊在大标题里垂直居中、字号回落，别跟着 26px 走 */
+  .d-title .tb-ver { align-self: center; font-size: 12px; font-weight: 400; opacity: .75; }
+  .d-edit { font-size: 12px; font-weight: 500; color: #2456c4; text-decoration: none; padding: 3px 8px; border-radius: 7px; background: transparent; border: 1px solid transparent; opacity: .75; pointer-events: auto; transition: all .15s; }
+  .d-edit:hover { background: rgba(36,86,196,.08); color: #1b47a8; opacity: 1; }
+  .d-temp { font-size: 26px; color: #e8842c; }
+  .d-subs { margin-top: 8px; font-size: 13px; opacity: .7; display: flex; gap: 16px; }
+  .d-panel { position: absolute; right: 28px; top: 24px; bottom: 70px; width: 212px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 2px; scrollbar-width: thin; pointer-events: none; }
+  .d-panel::-webkit-scrollbar { width: 5px; }
+  .d-panel::-webkit-scrollbar-thumb { background: #c3ccd9; border-radius: 3px; }
+  /* 扁平卡片: 小圆角、无阴影、留白更薄 */
+  .d-card { background: rgba(255,255,255,.78); backdrop-filter: blur(8px); border: 1px solid #e3e9f1; color: #1f2733; border-radius: 9px; padding: 9px 13px; min-width: 178px; max-width: 100%; box-shadow: none; }
+  .d-card .k { font-size: 12px; opacity: .55; letter-spacing: .2px; }
+  .d-card .v { font-size: 21px; font-weight: 700; }
+  .d-card .v small { font-size: 12px; font-weight: 400; opacity: .6; }
+  /* 设备概览: 单行数值 + 细进度条 */
+  .ov-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+  .ov-num { font-size: 18px; font-weight: 700; line-height: 1.1; }
+  .ov-num small { font-size: 11px; font-weight: 400; opacity: .55; }
+  .ov-bar { margin-top: 7px; height: 3px; border-radius: 2px; background: #e4e9f0; overflow: hidden; }
+  .ov-bar i { display: block; height: 100%; background: #f6a723; border-radius: 2px; transition: width .35s ease; }
+  .card-sec { pointer-events: auto; }
+  /* 场景: 每行一个，行间留白 + 浅底区分，右侧执行按钮 */
+  .sc-list { margin-top: 7px; max-height: 246px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; scrollbar-width: thin; }
+  .sc-list::-webkit-scrollbar { width: 4px; }
+  .sc-list::-webkit-scrollbar-thumb { background: #cfd6e0; border-radius: 3px; }
+  .sc-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 7px; background: rgba(238,242,248,.9); transition: background .15s; }
+  .sc-item:hover { background: #e6ecf7; }
+  .sc-item .nm { flex: 1; min-width: 0; font-size: 12.5px; color: #2a3340; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sc-run { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 1px solid #d6dfec; background: #fff; color: #2456c4; font-size: 9px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0; transition: all .15s; }
+  .sc-run:hover { background: #2456c4; border-color: #2456c4; color: #fff; }
+  .sc-run:active { transform: scale(.92); }
+  .sc-run.busy { background: #eef3fd; border-color: #b9cdf3; cursor: default; }
+  .sc-run.ok { background: #22b866; border-color: #22b866; color: #fff; }
+  .sc-run[disabled] { cursor: default; }
+  .sc-run .spin { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #c2d3f2; border-top-color: #2456c4; animation: scspin .55s linear infinite; }
+  @keyframes scspin { to { transform: rotate(360deg); } }
+  /* 底部轻提示（场景执行反馈） */
+  .d-toast { position: absolute; left: 50%; bottom: 32px; transform: translateX(-50%); background: rgba(31,39,51,.9); color: #fff; font-size: 12.5px; padding: 8px 18px; border-radius: 999px; white-space: nowrap; animation: toastIn .18s ease-out; }
+  @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  /* 快捷设备: 两列等宽 */
+  .q-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+  .btn-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .act-btn { display: flex; align-items: center; gap: 5px; background: #fff; border: 1px solid #dfe5ee; color: #1f2733; border-radius: 9px; padding: 6px 10px; font-size: 12px; max-width: 100%; text-align: left; transition: all .15s; }
+  .act-btn:hover { background: #eef3fd; border-color: #c9d8f5; }
+  .act-btn .ic { flex: none; }
+  .q-grid .act-btn { width: 100%; min-width: 0; padding: 7px 9px; }
+  .q-grid .act-btn .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act-btn.scene { background: #eaf0fe; border-color: #c9dafb; color: #2456c4; }
+  .act-btn.scene:hover { background: #d9e6fd; }
+  .act-btn.on { background: #f6a723; border-color: #f0b95c; color: #1c2333; font-weight: 600; }
+  .d-left { position: absolute; left: 28px; top: 108px; display: flex; flex-direction: column; gap: 10px; max-height: 30vh; overflow-y: auto; pointer-events: none; scrollbar-width: thin; }
+  .d-left::-webkit-scrollbar { width: 5px; }
+  .d-left::-webkit-scrollbar-thumb { background: #c3ccd9; border-radius: 3px; }
+  .d-floors { position: absolute; left: 28px; bottom: 64px; display: flex; flex-direction: column; gap: 9px; pointer-events: auto; }
+  .d-floors button { background: rgba(255,255,255,.9); border: 1px solid #dfe5ee; color: #1f2733; border-radius: 11px; padding: 8px 16px; font-size: 13px; text-align: left; transition: background .2s; }
+  .d-floors button.active { background: #1f2733; border-color: #1f2733; color: #fff; font-weight: 700; }
+  .d-tools { position: absolute; right: 28px; bottom: 24px; display: flex; gap: 8px; pointer-events: auto; }
+  .d-tools button { background: rgba(255,255,255,.9); border: 1px solid #dfe5ee; color: #1f2733; border-radius: 10px; padding: 8px 14px; font-size: 12px; }
+  .d-tools button.on { background: #1f2733; border-color: #1f2733; color: #fff; font-weight: 600; }
+  .d-status { position: absolute; left: 28px; bottom: 24px; color: #6b7686; font-size: 12px; display: flex; align-items: center; gap: 7px; }
+  .d-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa3b2; }
+  .d-status.on .dot { background: #22b866; box-shadow: 0 0 8px #22b86688; }
+  .d-empty { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; color: #1f2733; }
+  .d-empty a { color: #2456c4; }
+  [v-cloak] { display: none; }
+  /* 启动图: 覆盖 JS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
+  #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
+  #boot .b-logo { font-size: 46px; filter: drop-shadow(0 4px 10px rgba(60,80,120,.18)); }
+  #boot .b-name { font-size: 17px; font-weight: 700; color: #1f2733; letter-spacing: 1px; }
+  #boot .b-spin { width: 30px; height: 30px; border: 3px solid #d7deea; border-top-color: #3b82f6; border-radius: 50%; animation: b-rot .8s linear infinite; }
+  #boot .b-tip { font-size: 12px; color: #8a94a6; }
+  @keyframes b-rot { to { transform: rotate(360deg); } }
+</style>

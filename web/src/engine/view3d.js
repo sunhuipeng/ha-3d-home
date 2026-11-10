@@ -4,9 +4,14 @@
  * 墙体分段开洞 / 地板 / 家具 GLB 体块 / 门窗与设备（造型全由插件生成，这里只做变换与拾取）
  * 背景挂载 / 楼层切换 / 点击控制 / 实时标签
  */
-'use strict';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { HA } from './ha.js';
+import { furnSpec } from './catalog.js';
+import { PluginEngine } from './plugins.js';
 
-const View3D = {
+export const View3D = {
   renderer: null, scene: null, camera: null, controls: null,
   root: null,              // 当前楼层根节点
   wrap: null,
@@ -59,7 +64,7 @@ const View3D = {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
     this.camera.position.set(9, 10, 11);
 
-    this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     /* 允许略微仰视（polar > 90°）：房屋悬空/建在山顶时，能看到房屋底面与底下的地形 */
@@ -67,9 +72,12 @@ const View3D = {
 
     this.raycaster = new THREE.Raycaster();
 
-    // 灯光（半球光 + 平行光；基础场景不逐灯加 PointLight，灯具自身的补光由插件 lightKit 负责）
-    this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x8a7a66, 1.05));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.5);
+    // 灯光（半球光 + 平行光；基础场景不逐灯加 PointLight，灯具自身的补光由插件 lightKit 负责）。
+    // three r155+ 默认 useLegacyLights=false，移除了旧版对灯光强度 ×π 的缩放；
+    // 按现代写法显式把强度乘 π，等效旧 vendor three 的观感（否则同强度画面偏暗）。
+    const LIGHT_SCALE = Math.PI;
+    this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x8a7a66, 1.05 * LIGHT_SCALE));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.5 * LIGHT_SCALE);
     dir.position.set(8, 14, 6);
     this.scene.add(dir);
 
@@ -201,7 +209,7 @@ const View3D = {
     this._wallOpacity = (fl.wallOpacity != null ? fl.wallOpacity : 45) / 100;
     if (this._wallMat) this._wallMat.opacity = this._wallOpacity;
 
-    this.buildFloorSlab(fl);
+    this.buildFloor(fl);
     // 把门窗归属到最近的墙，墙体真实掏洞
     const wallOpenings = fl.walls.map(() => []);
     (fl.windows || []).forEach((wd) => this.assignOpening(wd, 'window', fl, wallOpenings));
@@ -235,7 +243,7 @@ const View3D = {
     this.camera.position.add(this.center.clone().sub(prevTarget));
     this.controls.update();
 
-    /* 当前楼层的房屋包围盒 + 安全边界的地基：背景插件按它决定在哪里画。
+    /* 当前楼层的房屋包围盒：背景插件按它决定在哪里画。
      * 按层取（楼层间户型尺寸可能不一样，背景构图跟着当前层走）。
      * 重放判定键 = 楼层号 | 包围盒 | 层高 | 背景样式 | 位置参数（见 bgKeyOf），
      * 任一变化都要重画背景：
@@ -446,8 +454,9 @@ const View3D = {
     f.mesh.material.opacity = 0.85 * (1 - k);
   },
 
-  buildFloorSlab(fl) {
-    // 根据墙体包围盒生成地板
+  buildFloor(fl) {
+    // 房屋地板：严格贴合墙体包围盒（不向外扩），就是一个水平面（非下沉薄板）。
+    // 给房屋内部一个落脚面；背景插件用的 houseBounds / safe 由 computeHouse() 提供，不受影响。
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     fl.walls.forEach((w) => {
       minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2);
@@ -455,12 +464,12 @@ const View3D = {
     });
     if (minX === Infinity) return;
     const w = maxX - minX, d = maxY - minY;
-    const geo = new THREE.BoxGeometry(w + 0.4, 0.12, d + 0.4);
-    const mat = new THREE.MeshLambertMaterial({ color: 0xb3a78e });   // 暖灰地台：非白、不晃眼，与白墙区分
-    const slab = new THREE.Mesh(geo, mat);
-    slab.position.set((minX + maxX) / 2, -0.06, (minY + maxY) / 2);
-    this.root.add(slab);
-    // 地台用统一暖灰底色，与白墙区分
+    const geo = new THREE.PlaneGeometry(w, d);
+    const mat = new THREE.MeshLambertMaterial({ color: 0xb3a78e, side: THREE.DoubleSide });
+    const floor = new THREE.Mesh(geo, mat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set((minX + maxX) / 2, -0.02, (minY + maxY) / 2);
+    this.root.add(floor);
   },
 
   assignOpening(o, kind, fl, wallOpenings) {
@@ -575,7 +584,7 @@ const View3D = {
     const grp = new THREE.Group();
     // 形态解析: mid → 目录形态定义（assets 动态目录；尺寸/模型/颜色由 furnSpec 统一解析）
     const S = furnSpec(f);
-    if (S.model && window.THREE.GLTFLoader) {
+    if (S.model && GLTFLoader) {
       this.loadModel(S.model).then((proto) => {
         if (!proto) { this.buildFallbackFurniture(f, grp); this.render(); return; }  // 模型缺失 → 内置体块兜底
         const inst = proto.clone(true);
@@ -602,7 +611,7 @@ const View3D = {
   loadModel(url) {
     if (this._gltfCache[url]) return this._gltfCache[url];
     this._gltfCache[url] = new Promise((resolve) => {
-      new THREE.GLTFLoader().load(url, (gltf) => resolve(gltf.scene), undefined, () => resolve(null));
+      new GLTFLoader().load(url, (gltf) => resolve(gltf.scene), undefined, () => resolve(null));
     });
     return this._gltfCache[url];
   },

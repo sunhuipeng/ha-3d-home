@@ -1,11 +1,20 @@
+'use strict';
+/*
+ * 共用基础层（服务端唯一保留的共用代码，其余能力都已消化进各 *.js）。
+ *   · 目录常量 / 运行模式 / 日志 / data 持久化   ← 原 core.js
+ *   · JSON 响应 / 请求体读取（含大小上限）       ← 原 http-utils.js
+ *   · 路由公共件 json / wrap / requestURL        ← 原 shared.js
+ * 所有函数体逐字保留，只去掉重复的内置 require 与 module.exports。
+ */
+const fs = require('fs');
+const path = require('path');
+
+/* ===== 原 core.js：目录常量 / 日志 / data 持久化 ===== */
 /*
  * 基础层：目录常量、运行模式、日志、data/*.json 持久化。
  * 全站唯一决定「文件放哪、配置怎么存」的地方，其他模块只从这里取。
  */
-'use strict';
 
-const fs = require('fs');
-const path = require('path');
 
 /* ---------- 路径 ---------- */
 const ROOT = path.join(__dirname, '..');
@@ -198,11 +207,85 @@ function saveProject(proj) {
   return { saved: true, time: Date.now() };
 }
 
-module.exports = {
-  ROOT, DATA_DIR, ASSET_DIR, CUSTOM_DIR, PUBLIC_DIR, IS_PROD, log, logErr, ensureDirs,
-  readJSON, writeJSON, appVersion,
-  getConfig, saveConfig,
-  installKey, installKeyLocked, setInstallKey,
-  normProject, loadProject, saveProject,
-  loadAnchors, saveAnchor,
-};
+/* ===== 原 http-utils.js：JSON 响应 / 请求体读取 ===== */
+/*
+ * HTTP 小工具：JSON 响应 + 请求体读取。
+ * 与「静态资源怎么发出去」无关，从 assets.js 拆出来，供路由层和其它模块共用。
+ * 零 npm 依赖（只用 Node 内置模块）。
+ */
+
+const BODY_MAX_BYTES = 20 * 1024 * 1024;   // JSON 请求体上限
+
+function sendJSON(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
+
+/* 统一的流式读取。超过上限后不再缓存数据、但继续把流读完，这样还能回一个
+ * 正常的 JSON 错误（带 status 413），而不是直接掐断连接。 */
+function collectBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0; let over = false;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { over = true; return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (over) {
+        return reject(Object.assign(
+          new Error('请求体过大（上限 ' + Math.round(limit / 1048576) + 'MB）'), { status: 413 }));
+      }
+      resolve(Buffer.concat(chunks));
+    });
+    req.on('error', reject);
+  });
+}
+
+/* 读 JSON 请求体（解析失败回 null，由调用端判断） */
+async function readBody(req) {
+  const buf = await collectBody(req, BODY_MAX_BYTES);
+  if (!buf.length) return null;
+  try { return JSON.parse(buf.toString('utf8')); } catch (e) { return null; }
+}
+
+/* 读原始字节（上传 zip 用：要的就是二进制，不能走 JSON 解析） */
+function readRawBody(req, limit) {
+  return collectBody(req, limit);
+}
+
+/* 路由分域函数用它同时完成「回响应」与「告诉主流程已处理」，避免把
+ * `return sendJSON(...)` 的 undefined 当成「未处理」继续往下走。 */
+function reply(res, code, obj) {
+  sendJSON(res, code, obj);
+  return true;
+}
+
+/* ===== 路由公共件 ===== */
+/*
+ * 路由层公共件。
+ *
+ * 「接口级复刻」的关键：不改用 Express 的 res.json / body-parser，而是继续复用
+ * 旧站 http-utils.js 的 sendJSON / readBody / readRawBody ——
+ *   sendJSON  = writeHead(code, {Content-Type, Cache-Control:no-store}) + JSON.stringify
+ *   readBody  = 原生流式读取（20MB 上限，超限 reject 带 status 413）
+ * Express 的 req/res 就是原生对象的扩展，未挂任何 body parser 时可直接这样用，
+ * 响应状态码 / header / body 与旧站逐字节一致。
+ */
+
+/* 与旧 handle* 的 reply(res, code, obj) 完全同一实现 */
+function json(res, code, obj) { return reply(res, code, obj); }
+
+/* Express 4 不会自动捕获 async handler 的 rejection，统一包一层交给 app.js 的错误兜底，
+ * 复刻旧站 createServer 的 try/catch → sendJSON(e.status||500, {error})。 */
+function wrap(fn) {
+  return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
+
+/* 旧站主流程用 new URL(req.url, 'http://localhost')；Express 在 use('/api', ...)
+ * 里会临时裁剪 req.url，所以统一取 originalUrl，保证 pathname / searchParams 一致。 */
+function requestURL(req) {
+  return new URL(req.originalUrl || req.url, 'http://localhost');
+}
+
+module.exports = { ROOT, DATA_DIR, ASSET_DIR, CUSTOM_DIR, PUBLIC_DIR, CONFIG_FILE, PROJECT_FILE, INSTALL_KEY_FILE, PKG_FILE, IS_PROD, LOG_ON, log, logErr, ensureDirs, readJSON, appVersion, writeJSON, config, getConfig, saveConfig, installCfg, installKey, installKeyLocked, setInstallKey, normProject, loadProject, anchorsOf, loadAnchors, ANCHOR_KEY_RE, UNSAFE_KEYS, safeAnchorKey, mergeAnchors, saveAnchor, saveProject, BODY_MAX_BYTES, sendJSON, collectBody, readBody, readRawBody, reply, json, wrap, requestURL };

@@ -1,6 +1,6 @@
 {
   "name": "ha-3d-home",
-  "version": "1.0.8",
+  "version": "1.0.12",
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "description": "轻量级 Home Assistant 3D 全屋智能可视化：户型绘制 / 家具摆放 / 设备绑定 / 3D 实时展示",
@@ -8,15 +8,14 @@
   "scripts": {
     "start": "node server/index.js",
     "push:image:arm64": "bash scripts/push-image.sh linux/arm64",
-    "push:image": "bash scripts/push-image.sh",
-    "minify": "node scripts/minify-static.mjs --out dist-min public assets",
-    "fix:glb": "python3 scripts/fix-glb-materials.py",
-    "fix:glb:check": "python3 scripts/fix-glb-materials.py --check"
+    "push:image": "bash scripts/push-image.sh"
   },
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {},
+  "dependencies": {
+    "express": "^4.22.3"
+  },
   "devDependencies": {
     "clean-css": "^5.3.3",
     "html-minifier-terser": "^7.2.0",

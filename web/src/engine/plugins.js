@@ -54,10 +54,12 @@
  *   六、上下文         _makeCtx —— 插件拿到的那一整套能力（THREE/几何/状态/扩展实体/animate）
  *   七、生命周期       _spawn / spawnDevice（设备与门/窗统一）/ 占位 / updateAll / tick / reset
  */
-'use strict';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { HA } from './ha.js';
 
 /* 背景插件 id 变更记录: 旧 id → 当前 id（旧项目里的 settings.background 据此自动迁移） */
-const BG_ID_ALIAS = { backdrop_ground: 'background' };
+export const BG_ID_ALIAS = { backdrop_ground: 'background' };
 
 /* ---------------- options schema 的控件类型（唯一的类型白名单） ----------------
  * 只认 5 种：'range'（滑块+数字框）/ 'number'（数字框）/ 'select'（下拉，配 choices）/
@@ -65,18 +67,18 @@ const BG_ID_ALIAS = { backdrop_ground: 'background' };
  * 归一化在 register() 里做一次，下游（面板 / MCP / 预览）读到的 type 一定是这 5 个之一：
  *   · 没写 type、或写了不认识的值 → 'text'（文本框兜底，不再靠渲染层 v-else 猜）
  *   · 历史写法 'bool' → 'checkbox'（老插件代码不用改） */
-const OPT_TYPES = ['range', 'number', 'select', 'checkbox', 'text'];
-function normalizeOption(o) {
+export const OPT_TYPES = ['range', 'number', 'select', 'checkbox', 'text'];
+export function normalizeOption(o) {
   if (!o || typeof o !== 'object') return o;
   const raw = String(o.type == null ? '' : o.type).toLowerCase();
   const type = raw === 'bool' ? 'checkbox' : (OPT_TYPES.indexOf(raw) >= 0 ? raw : 'text');
   return type === o.type ? o : Object.assign({}, o, { type });
 }
-function normalizeOptions(list) {
+export function normalizeOptions(list) {
   return (Array.isArray(list) ? list : []).map(normalizeOption);
 }
 
-const PluginEngine = {
+export const PluginEngine = {
   defs: [],          // 已注册插件定义
   byId: {},          // id -> def
   instances: [],     // { def, obj, inst, anim }
@@ -741,7 +743,7 @@ const PluginEngine = {
     /* ctx: 引擎把「房屋尺寸 + 安全边界 + 用户参数 + 地面网格工厂」交给插件，
      * 插件不需要自己测尺寸、摆平面，也不需要感知"何时该重建" */
     const mkPlane = (src, sizeM, hole) => {
-      const T = window.THREE;
+      const T = THREE;
       const tex = (src && src.isTexture) ? src : new T.CanvasTexture(src);
       if (v3.renderer && v3.renderer.capabilities) {
         tex.anisotropy = Math.min(4, v3.renderer.capabilities.getMaxAnisotropy());
@@ -787,7 +789,7 @@ const PluginEngine = {
       return mesh;
     };
     const ctx = {
-      THREE: window.THREE, size: 512, house,
+      THREE: THREE, size: 512, house,
       safe: house ? this.safeZone(house) : null,
       options: bgOpts,
       houseY: H,          // 与 ctx.options.houseY / ctx.house.y 同一个值，插件随手可取
@@ -832,8 +834,8 @@ const PluginEngine = {
      * 它挂在背景 group 下，重放时随 group 一起销毁重建 —— 插件不必缓存模块级引用，
      * 也就不会把元素写到已释放对象上。静态背景（refresh:0）同样会建。 */
     let overlay = null;
-    if (dataFn && dataFields.length && window.THREE) {
-      overlay = new window.THREE.Group();
+    if (dataFn && dataFields.length && THREE) {
+      overlay = new THREE.Group();
       overlay.name = 'onData-overlay';
       out.group.add(overlay);
     }
@@ -1076,7 +1078,7 @@ const PluginEngine = {
 
   /* ---------------- 上下文（传给插件 model3d 的能力集） ---------------- */
   _makeCtx(def, obj, view, extra) {
-    const T = window.THREE;   // Three.js 命名空间（插件页面加载时已就绪）
+    const T = THREE;   // Three.js 命名空间（插件页面加载时已就绪）
     const self = this;
     const lambertF = (color, opts) => new T.MeshLambertMaterial(Object.assign({ color: new T.Color(color) }, opts || {}));
     let glowCache = null;   // 径向渐变光晕贴图（跨实例共享）
@@ -1095,7 +1097,7 @@ const PluginEngine = {
       return glowCache;
     };
     const ctx = Object.assign({
-      THREE: window.THREE,
+      THREE: THREE,
       obj,                    // 门窗/设备数据对象（x/y/rot/entityId…）
       view,                   // View3D 引用
       wallH: view.wallH,
@@ -1147,6 +1149,9 @@ const PluginEngine = {
        * opts.angle 锥角(弧度) / opts.dist 照射距离 / opts.strength 聚光强度 */
       lightKit(parent, y, glowSize, opts) {
         const mat = (c, o) => lambertF(c, o);
+        // three r155+ 默认 useLegacyLights=false，移除了对灯光强度 ×π 的缩放；
+        // 显式乘 π 等效旧 vendor three 的灯具补光亮度（与 view3d.js 基础灯光一致）。
+        const LIGHT_SCALE = Math.PI;
         const dir = opts && opts.dir ? opts.dir : 'omni';
         const bulbMat = mat(0xfff3d6);
         const bulb = new T.Mesh(new T.SphereGeometry(0.08, 16, 12), bulbMat);
@@ -1181,8 +1186,8 @@ const PluginEngine = {
             bulbMat.emissive.setHex(on ? 0xffc247 : 0x000000);
             if (on && rgb && rgb.length >= 3) bulbMat.emissive.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
             glowMat.opacity = on ? 0.85 : 0;
-            plight.intensity = on ? ptBase : 0;
-            if (spot) spot.intensity = on ? (opts && opts.strength) || 0.9 : 0;
+            plight.intensity = on ? ptBase * LIGHT_SCALE : 0;
+            if (spot) spot.intensity = on ? ((opts && opts.strength) || 0.9) * LIGHT_SCALE : 0;
             if (on && rgb && rgb.length >= 3) {
               plight.color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
               if (spot) spot.color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
@@ -1321,7 +1326,7 @@ const PluginEngine = {
       put(panel);
       return;
     }
-    if (d.model && window.THREE && THREE.GLTFLoader && view.loadModel) {
+    if (d.model && THREE && GLTFLoader && view.loadModel) {
       view.loadModel(d.model).then((proto) => {
         if (!proto) { put(this._unknownBox()); return; }
         const inst = proto.clone(true);
@@ -1375,7 +1380,7 @@ const PluginEngine = {
 
 /* ctx.frame 的内置代码兜底: ref ≤ 1m 按门框（通高门套），否则按窗框（1.5m 居中窗套）。
  * 几何取自 door/window 插件原各自的兜底实现，收敛到引擎后插件不必再维护 */
-function frameFallback(ctx, g, ref) {
+export function frameFallback(ctx, g, ref) {
   const door = ref <= 1.0;
   const col = door ? '#d9d4c8' : '#9aa7b5';
   const d = door ? 0.12 : 0.1;
@@ -1398,7 +1403,7 @@ function frameFallback(ctx, g, ref) {
  *   p.rrect(x, y, w, h, rad)  只建路径（不 fill/stroke），可继续接自己的 c.stroke()
  *   p.draw(fn, opts)          fn 里只建路径，结束后统一按调色板填色 + 描边
  *                             opts.fill/opts.stroke 传 false 可只填或只描 */
-function planKit(c, p) {
+export function planKit(c, p) {
   return Object.assign({}, p, {
     rrect(x, y, w, h, rad) {
       rad = Math.min(rad || 0, w / 2, h / 2);

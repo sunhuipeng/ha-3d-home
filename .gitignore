@@ -6,3 +6,4 @@ data/
 dist-min/
 .DS_Store
 custom/
+node_modules/

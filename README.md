@@ -47,7 +47,7 @@
 ```
 浏览器 ──WebSocket直连──> Home Assistant (:8123/api/websocket)   实时状态 + 控制
    │
-   └──HTTP──> 本服务 (Node, 零npm依赖)                            静态页面 + 配置/项目存储 + HA 连接测试
+   └──HTTP──> 本服务 (Node + Express)                              静态页面 + 配置/项目存储 + HA 连接测试
                  ├─ /data      config.json · project.json · refimg.*（2D 参考底图）
                  └─ /app/assets 内置家具模型与插件（镜像内，只读）
 ```
@@ -192,7 +192,8 @@ armchair.glb  想放几件放几件，每件在 items 里各占一条
 ## 本地开发（无需 Docker）
 
 ```bash
-node server/index.js   # 零依赖，无需 npm install；端口默认 8077（PORT=xxxx 可改）
+npm install             # 首次安装 express（服务端唯一生产依赖）
+npm start               # = node server/index.js；端口默认 8077（PORT=xxxx 可改）
 # 打开 http://localhost:8077
 ```
 
@@ -215,15 +216,15 @@ node server/index.js   # 零依赖，无需 npm install；端口默认 8077（PO
 ## 目录
 
 ```
-server/            后端（零 npm 依赖，只用 Node 内置模块）
-  index.js         入口：启动 + 按域拆分的路由表（system / config / assets / install / project）
-  core.js          目录常量 / 日志 / data 持久化（连接配置、安装密钥、户型项目、锚点）
-  http-utils.js    JSON 响应 + 请求体读取（统一大小上限，超限回 413）
-  ha.js            HA 连接测试（实时状态由浏览器直连 WS，本服务不代理 /api/states 等）
-  assets.js        静态托管与缓存（HTML no-store、带 ?v= 资源 immutable）、家具目录合并、2D 参考底图
-  plugins.js       插件清单扫描 + zip 安装（按 kind 分流插件/家具，自带最小 zip 解析 + 解压预算）
-  catalog-import.js 家具包（kind: catalog）清单校验、安装到 custom/models/<项目id>/、目录扫描
-  atomic-dir.js    安装包落盘的公共原子替换（插件包与家具包共用，失败回滚）
+server/            后端（Express 4 是唯一生产依赖，其余仍用 Node 内置模块；全部平铺、无子目录）
+  index.js         唯一入口：启动 + 应用组装 + 按域挂载路由 + 静态/异常兜底
+  shared.js  唯一共用基础层：目录常量/日志/data 持久化 + JSON 响应 + 请求体读取 + 路由公共件
+  library.js 共用能力层：静态托管与缓存 + 家具目录/2D 底图 + 家具包 + 插件清单/zip 安装 + 原子替换
+  system.js     /api/health、/api/version
+  config.js     /api/config、/api/config/test（含 HA 连接测试）
+  assets.js     /api/upload、/api/refimg、/api/catalog、/api/plugins
+  install.js    /api/install/config*、/api/plugins/install、/api/plugins/import
+  project.js    /api/project、/api/anchor、/api/house/size
 public/            前端（编辑器 / 3D / HA 客户端，交互逻辑全在前端）
   index.html       编辑器（2D 户型 + 3D 预览 + 面板）
   display.html     大屏展示页（只读 + 场景执行 + 快捷设备）
@@ -244,7 +245,7 @@ PLUGIN-DEV.md      插件开发手册（通用 ctx 函数表 + 设备/门窗/背
 
 ## 脚本工具（scripts/）
 
-全部零依赖，无需 npm install：
+以下脚本只用 Python / bash，本身不需要 npm install：
 
 | 脚本 | 作用 | 用法 |
 |---|---|---|

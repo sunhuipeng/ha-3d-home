@@ -19,9 +19,8 @@
  *       成为一步（label='view'）。这样 undo 一次只回退一步，视图与数据始终同步回退。
  *       连续平移/缩放合并为同一条（项目数据没变，只刷新它的 view），不会把栈塞满。
  */
-'use strict';
 
-const Recode = {
+export const Recode = {
   MAX: 100,          // 栈深上限（超出丢最旧）
   MERGE_MS: 600,     // 同 label 连续改动合并的时间窗
 

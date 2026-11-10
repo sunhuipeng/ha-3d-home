@@ -4,9 +4,8 @@
  * app.js 与 display.js 的同名 computed 都委托到这里 —— 这四段曾两页逐字各抄一份，
  * 改天气文案/卡片结构要同步两处，现收敛为唯一实现。
  */
-'use strict';
 
-const HUD = {
+export const HUD = {
   /* HA 天气实体的 condition → 中文（未收录的原样显示英文值） */
   condMap: {
     sunny: '晴', cloudy: '多云', partlycloudy: '局部多云', rainy: '雨', snowy: '雪',
