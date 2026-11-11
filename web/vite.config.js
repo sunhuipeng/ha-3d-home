@@ -5,6 +5,9 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5190,
+    /* src/version.js 要 import '../../package.json'（仓库根的应用版本号），
+     * 它位于 Vite root（web/）之外；显式放行上层目录，避免 fs.strict 拦下。 */
+    fs: { allow: ['..'] },
     proxy: {
       // 开发时 API 转发到本地 home 服务（node server/index.js，默认 8077）
       '/api': 'http://localhost:8077',

@@ -1,7 +1,13 @@
 /*
- * ha.js — Home Assistant 浏览器直连 WebSocket 客户端
- * 流程: 连接 /api/websocket → auth(长期令牌) → subscribe_entities 实时推送
- * 支持 get_states / call_service；未配置 HA 时进入演示模式（模拟实体）。
+ * services/ha.js — Home Assistant 浏览器直连 WebSocket 客户端（非 Vue 服务层）
+ *
+ * 这里不是引擎层：它不做绘制，只负责连接 /api/websocket → auth(长期令牌) →
+ * subscribe_entities 实时推送，支持 get_states / call_service；未配置 HA 时进入
+ * 演示模式（模拟实体）。WebSocket / pending Promise / 定时器 / entities Map 都是
+ * 协议状态机，必须保持普通对象，不能进 Pinia reactive state。
+ *
+ * UI 需要的响应式投影在 stores/ha.js，由 bridge.js 在 status/change 事件边界写入；
+ * 本文件末尾把 HA 挂到 window，供动态插件与旧调用点做特性检测。
  */
 
 export const HA = {
@@ -24,6 +30,9 @@ export const HA = {
 
   async loadConfig() {
     const r = await fetch('/api/config');
+    /* 代理没起来 / 路由被静态托管吃掉时会返回 HTML 或 404；以前直接 r.json() 要么
+     * 抛错、要么 c.haUrl 为 undefined 被静默当成「未配置」，页面只会显示「正在连接…」。 */
+    if (!r.ok) throw new Error('读取连接配置失败: HTTP ' + r.status);
     const c = await r.json();
     this.url = (c.haUrl || '').trim();
     this.token = (c.token || '').trim();
@@ -35,9 +44,13 @@ export const HA = {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ haUrl, token }),
     });
+    if (!r.ok) throw new Error('保存连接配置失败: HTTP ' + r.status);
     const c = await r.json();
-    this.url = (haUrl || '').trim();
-    this.token = (token || '').trim();
+    /* 服务端对空字段会回退到已落盘的值（server/config.js: body.token || cur.token）。
+     * 不能拿表单入参直接覆盖客户端：表单里令牌为空时，服务端其实保留了旧令牌，
+     * 客户端却把自己清空，随后 connect() 会误判「未配置」并进入演示模式。
+     * 一律以服务端权威结果重新读一次。 */
+    await this.loadConfig();
     this._authInvalid = false;
     return c;
   },

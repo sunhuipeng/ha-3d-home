@@ -35,7 +35,7 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 .floor-switch button { padding: 4px 10px; border-radius: 6px; font-size: 12px; color: var(--ink2); }
 .floor-switch button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .tb-chip { font-size: 12px; color: var(--ink2); background: var(--bg); padding: 4px 10px; border-radius: 8px; }
-/* 顶栏版本号：文字由 /js/version.js 从 /api/version 填充（唯一出处 package.json），前端不写死 */
+/* 顶栏版本号：编译期由 src/version.js 从仓库根 package.json 导入，前端不写死 */
 .tb-ver { font-size: 11px; line-height: 1.5; color: var(--ink2); background: var(--bg); border: 1px solid var(--line); padding: 1px 7px; border-radius: 999px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .conn-chip { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink2); }
 .conn-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: #d1d5db; }

@@ -1,11 +1,6 @@
 <template>
-  <!-- 启动图: 覆盖 JS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 -->
-  <div id="boot">
-    <div class="b-logo">🏠</div>
-    <div class="b-name">HA 3D Home</div>
-    <div class="b-spin"></div>
-    <div class="b-tip">正在加载，请稍候…</div>
-  </div>
+  <!-- 启动遮罩（两页共用 components/common/BootOverlay.vue），由 boot.js 的 bootDone() 移除 -->
+  <boot-overlay />
 
   <div id="display" v-cloak>
     <div id="stage"></div>
@@ -13,7 +8,7 @@
     <div class="d-hud" v-if="project && project.floors.length">
       <div class="d-top">
         <div class="d-title">
-          🏠 {{ project.name }}<a class="d-edit" href="/index.html" title="打开编辑器修改户型">编辑 ↗</a><span class="d-temp">{{ hudTemp }}</span><span class="tb-ver" data-app-version hidden></span>
+          🏠 {{ project.name }}<a class="d-edit" href="/index.html" title="打开编辑器修改户型">编辑 ↗</a><span class="d-temp">{{ hudTemp }}</span><span class="tb-ver" :title="appTitle">v{{ appVersion }}</span>
         </div>
         <div class="d-subs"><span v-for="s in hudSubs" :key="s">{{ s }}</span></div>
       </div>
@@ -92,12 +87,22 @@
 </template>
 
 <script>
+import BootOverlay from './components/common/BootOverlay.vue';
+import { bootDone, armBootFallback } from './components/common/boot.js';
+import { APP_NAME, APP_VERSION } from './version';
+import { getCurrentInstance } from 'vue';
+import { mapState, mapActions } from 'pinia';
+import { useHaStore } from './stores/ha';
+import { useCatalogStore } from './stores/catalog';
+import { useHud } from './composables/useHud';
+
 /*
- * DisplayApp — 展示大屏（独立页面，复用 ha.js / catalog.js / plugins.js / view3d.js 共享模块）
+ * DisplayApp — 展示大屏（独立页面，复用 services/ha.js / model/catalog.js / engine/plugins.js / view3d.js）
  * 长时间展示全屋状态: 3D 场景 + 实时数据 HUD + 自动旋转 + 断线自动重连
  * 由 main-display.js 通过 createApp(DisplayApp).mount('#app') 挂载。
- * 共享模块 HA / HUD / View3D / PluginEngine / loadCatalog / fetchProject / buildDefaultProject
- * 等均为 public/js 中挂载到 window 的全局变量，此处直接引用，不另行 import。
+ * View3D / PluginEngine / fetchProject / buildDefaultProject 等仍是 engine/index.js
+ * 挂到 window 的全局符号（动态插件依赖，不能删）；HA 连接状态走 stores/ha.js，
+ * HUD 派生走 composables/useHud.js，家具目录走 stores/catalog.js 的 loadCatalog Action。
  */
 
 /* ---- 大屏视图状态层（统一按楼层 id 读写）----
@@ -267,12 +272,22 @@ function applyAnchor(f) {
 }
 
 export default {
+  name: 'DisplayApp',
+  components: { BootOverlay },
+  /* HUD 派生数据由 composable 提供；项目数据仍是本页本地 data，故用延迟取值函数传入。 */
+  setup() {
+    const vm = getCurrentInstance().proxy;
+    return useHud(
+      () => vm.project && vm.project.settings,
+      () => vm.cur && vm.cur.display
+    );
+  },
+
   data() {
     return {
       project: null,
       floorIdx: 0,
       entVersion: 0,
-      haStatus: { status: 'connecting' },
       autoRotate: (function () { try { return localStorage.getItem('ha3d.autoRotate') !== '0'; } catch (e) { return true; } })(),
       showLabels: (function () { try { return localStorage.getItem('ha3d.showLabels') !== '0'; } catch (e) { return true; } })(),
       sceneBusy: {},           // eid → 执行中（防连点）
@@ -282,24 +297,14 @@ export default {
   },
 
   computed: {
+    /* 编译期常量（非状态）：来自仓库根 package.json，见 src/version.js */
+    appVersion() { return APP_VERSION; },
+    appTitle() { return APP_NAME + ' ' + APP_VERSION; },
+    /* HA 连接状态改由全局 ha store 提供（bridge.js 统一注册 status 监听）。 */
+    ...mapState(useHaStore, ['haStatus']),
     cur() { return this.project ? this.project.floors[this.floorIdx] : null; },
-    /* HUD 派生数据（纯函数在共享模块 hud.js，与编辑页同一套实现） */
-    weatherState() {
-      void this.entVersion;
-      return HUD.weatherState(HA, this.project && this.project.settings);
-    },
-    hudTemp() {
-      void this.entVersion;
-      return HUD.hudTemp(this.weatherState);
-    },
-    hudSubs() {
-      void this.entVersion;
-      return HUD.hudSubs(this.weatherState);
-    },
-    hudCards() {
-      void this.entVersion;
-      return HUD.hudCards(HA, this.cur && this.cur.display);
-    },
+    /* HUD 的 weatherState / hudTemp / hudSubs / hudCards 由 setup() 的 useHud() 提供，
+     * 原 engine/hud.js 与本页 4 个委托 computed 已删除。 */
     /* 已放置设备中开启数量（口径与 2D/3D 一致：插件 isOn(obj,get)，未声明回退通用规则） */
     onCount() {
       void this.entVersion;
@@ -369,18 +374,14 @@ export default {
   },
 
   methods: {
-    /* 由 mounted 在 Vue 挂载完成后调用；12s 兜底防止脚本异常时卡死在启动图 */
-    bootDone() {
-      const b = document.getElementById('boot');
-      if (!b) return;
-      b.style.opacity = '0';
-      b.style.pointerEvents = 'none';
-      setTimeout(() => { b.remove(); }, 260);
-    },
+    ...mapActions(useCatalogStore, ['loadCatalog']),
+    ...mapActions(useHaStore, { loadHaConfig: 'loadConfig' }),
+    /* 启动遮罩的移除 / 12s 兜底统一由 components/common/boot.js 提供 */
 
     async init() {
-      await loadCatalog();   // 目录先于项目加载（家具形态解析需要）
-      // 加载项目（编辑器保存的户型）；无保存数据时回退示例户型（fetchProject 在 catalog.js）
+      /* 目录加载走 catalog store 的 Action（model 层写引擎数据 + store 写响应式投影） */
+      await this.loadCatalog();   // 目录先于项目加载（家具形态解析需要）
+      // 加载项目（编辑器保存的户型）；无保存数据时回退示例户型（fetchProject 在 model/catalog.js）
       this.project = await fetchProject() || buildDefaultProject();
       /* 旋转锚点：服务端数据 settings.anchors 随项目一起下发，按楼层稳定 id 索引。
          在这里初始化一次，切层 / 重建都复用同一份表，不用再发请求。 */
@@ -431,9 +432,12 @@ export default {
       View3D.startLoop();
 
       // HA 连接（未配置则演示模式；断线自动重连在 ha.js 内）
-      await HA.loadConfig();
+      /* 配置读取走 ha store 的 Action：与编辑页共用同一份响应式镜像，
+       * 服务端 /api/config 的权威结果由 Action 统一回写。 */
+      await this.loadHaConfig();
+      /* status → ha store 已由 installHaBridge() 在 mount 前统一注册；
+       * 这里只保留本页的 change → 场景回执核对 + 3D 刷新编排。 */
       HA.on('change', () => this.onHAChange());
-      HA.on('status', (s) => { this.haStatus = s; });
       HA.connect();
     },
 
@@ -588,9 +592,9 @@ export default {
 
   mounted() {
     this.init();
-    this.bootDone();
-    // 12s 兜底：脚本异常时强制移除启动图，不卡死在加载界面
-    setTimeout(() => this.bootDone(), 12000);
+    bootDone();
+    // 12s 兜底：脚本异常时强制移除启动遮罩，不卡死在加载界面
+    armBootFallback();
   },
 };
 </script>
@@ -667,11 +671,5 @@ export default {
   .d-empty { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; color: #1f2733; }
   .d-empty a { color: #2456c4; }
   [v-cloak] { display: none; }
-  /* 启动图: 覆盖 JS 未加载完成时可能闪现的 Vue 模板字符串；样式内联不依赖外部资源 */
-  #boot { position: fixed; inset: 0; z-index: 9999; background: #f4f6fa; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .25s; font-family: system-ui, sans-serif; }
-  #boot .b-logo { font-size: 46px; filter: drop-shadow(0 4px 10px rgba(60,80,120,.18)); }
-  #boot .b-name { font-size: 17px; font-weight: 700; color: #1f2733; letter-spacing: 1px; }
-  #boot .b-spin { width: 30px; height: 30px; border: 3px solid #d7deea; border-top-color: #3b82f6; border-radius: 50%; animation: b-rot .8s linear infinite; }
-  #boot .b-tip { font-size: 12px; color: #8a94a6; }
-  @keyframes b-rot { to { transform: rotate(360deg); } }
+  /* 启动遮罩样式随 components/common/BootOverlay.vue 一起打包 */
 </style>

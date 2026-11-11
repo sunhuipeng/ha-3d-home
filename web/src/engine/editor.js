@@ -3,8 +3,8 @@
  * 网格吸附(0.1m) + 端点吸附；工具: 选择/平移/墙体/门/窗/家具/设备/贴图/背景
  * （删除不是工具: 选中后按 Delete 或点属性栏按钮）
  */
-import { HA } from './ha.js';
-import { uid, furnSpec, itemDisplayName } from './catalog.js';
+import { HA } from '../services/ha.js';
+import { uid, furnSpec, itemDisplayName } from '../model/catalog.js';
 import { PluginEngine } from './plugins.js';
 
 export const Editor = {

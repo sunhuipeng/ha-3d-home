@@ -7,3 +7,5 @@ dist-min/
 .DS_Store
 custom/
 node_modules/
+package-lock.json
+web/package-lock.json

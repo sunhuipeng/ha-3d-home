@@ -1,4 +1,16 @@
 /*
+ * model/catalog.js — 家具/设备目录与项目模型的「无 Vue 依赖」领域层
+ *
+ * 从原引擎目录整体迁来（旧的兼容门面已删除）：engine/ 只该放绘制/编辑器/渲染引擎，
+ * 这里放的是静态枚举、纯函数、目录数据与项目序列化，没有任何 Vue / Pinia 依赖。
+ * engine/editor.js / view3d.js 直接 import 本文件（兼容门面已删除）；它们在 2D 绘制、
+ * 3D 重建热路径里同步调用 furnSpec() / uid() / itemDisplayName()，因此这些函数必须
+ * 保持「不依赖组件实例」的普通 ESM 函数，不能改成 useStore() getter —— 那会把引擎
+ * 绑到 Vue 生命周期，SSR 与单测也会崩。
+ *
+ * 目录的响应式投影在 stores/catalog.js，由它的 loadCatalog() Action 在加载后写入本层；
+ * engine/index.js 把本文件的导出挂到 window，供运行时注入的动态插件使用。
+ *
  * catalog.js — 家具/设备目录（尺寸单位: 米）
  *
  * 数据模型:
@@ -25,8 +37,8 @@
  *             要新增设备造型 → 写一个插件（见 assets/plugins/door/plugin.js 头部手册），
  *             本文件不用改一行。
  */
-import { HA } from './ha.js';
-import { PluginEngine } from './plugins.js';
+import { HA } from '../services/ha.js';
+import { PluginEngine } from '../engine/plugins.js';
 
 /* 全局唯一 id 生成：编辑页与大屏页都会调 newFloor() / buildDefaultProject()。
  * 以前定义在 editor.js，而大屏页并不引入 editor.js —— 项目文件缺失走到示例户型

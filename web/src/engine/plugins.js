@@ -56,7 +56,7 @@
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { HA } from './ha.js';
+import { HA } from '../services/ha.js';
 
 /* 背景插件 id 变更记录: 旧 id → 当前 id（旧项目里的 settings.background 据此自动迁移） */
 export const BG_ID_ALIAS = { backdrop_ground: 'background' };
@@ -1149,9 +1149,8 @@ export const PluginEngine = {
        * opts.angle 锥角(弧度) / opts.dist 照射距离 / opts.strength 聚光强度 */
       lightKit(parent, y, glowSize, opts) {
         const mat = (c, o) => lambertF(c, o);
-        // three r155+ 默认 useLegacyLights=false，移除了对灯光强度 ×π 的缩放；
-        // 显式乘 π 等效旧 vendor three 的灯具补光亮度（与 view3d.js 基础灯光一致）。
-        const LIGHT_SCALE = Math.PI;
+        // ⚠ 灯具补光强度不再手动 ×π：legacy 灯光口径由 three-legacy.js 的 applyLegacyRenderer（_useLegacyLights=true）
+        //    在 renderer 层统一接管，等效旧 vendor three（r147）观感；这里只写「原始强度」，避免二次放大过曝。
         const dir = opts && opts.dir ? opts.dir : 'omni';
         const bulbMat = mat(0xfff3d6);
         const bulb = new T.Mesh(new T.SphereGeometry(0.08, 16, 12), bulbMat);
@@ -1186,8 +1185,8 @@ export const PluginEngine = {
             bulbMat.emissive.setHex(on ? 0xffc247 : 0x000000);
             if (on && rgb && rgb.length >= 3) bulbMat.emissive.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
             glowMat.opacity = on ? 0.85 : 0;
-            plight.intensity = on ? ptBase * LIGHT_SCALE : 0;
-            if (spot) spot.intensity = on ? ((opts && opts.strength) || 0.9) * LIGHT_SCALE : 0;
+            plight.intensity = on ? ptBase : 0;
+            if (spot) spot.intensity = on ? ((opts && opts.strength) || 0.9) : 0;
             if (on && rgb && rgb.length >= 3) {
               plight.color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
               if (spot) spot.color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);

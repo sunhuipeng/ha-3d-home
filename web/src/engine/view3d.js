@@ -7,9 +7,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { HA } from './ha.js';
-import { furnSpec } from './catalog.js';
+import { HA } from '../services/ha.js';
+import { furnSpec } from '../model/catalog.js';
 import { PluginEngine } from './plugins.js';
+import { applyLegacyRenderer } from './three-legacy.js';
 
 export const View3D = {
   renderer: null, scene: null, camera: null, controls: null,
@@ -48,6 +49,7 @@ export const View3D = {
     this.renderer.shadowMap.enabled = false;   // 省内存省性能
     this.renderer.setClearColor(0x000000, 0);  // 透明画布: 天空交给页面底色，不画渐变
     this.wrap.appendChild(this.renderer.domElement);
+    applyLegacyRenderer(this.renderer);   // 切回 r147 legacy 观感（色彩空间/编码/灯光），与 studio 同口径
 
     this.scene = new THREE.Scene();
 
@@ -73,11 +75,10 @@ export const View3D = {
     this.raycaster = new THREE.Raycaster();
 
     // 灯光（半球光 + 平行光；基础场景不逐灯加 PointLight，灯具自身的补光由插件 lightKit 负责）。
-    // three r155+ 默认 useLegacyLights=false，移除了旧版对灯光强度 ×π 的缩放；
-    // 按现代写法显式把强度乘 π，等效旧 vendor three 的观感（否则同强度画面偏暗）。
-    const LIGHT_SCALE = Math.PI;
-    this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x8a7a66, 1.05 * LIGHT_SCALE));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.5 * LIGHT_SCALE);
+    // ⚠ 强度不再手动 ×π：legacy 灯光口径由 three-legacy.js 的 applyLegacyRenderer（_useLegacyLights=true）
+    //    在 renderer 层统一接管，等效旧 vendor three（r147）观感；这里只写「原始强度」，避免二次放大过曝。
+    this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x8a7a66, 1.05));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.5);
     dir.position.set(8, 14, 6);
     this.scene.add(dir);
 
