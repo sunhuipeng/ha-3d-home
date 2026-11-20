@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <!-- 展示页：固定挂载 PanelApp，PC / 手机 / 平板 / 空壳 App 同一套页面，
+       由组件自身按窗口宽度（1024px 断点）切换窄屏单列与宽屏左右分栏。
+       viewport-fit=cover 对 PC 无副作用。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- 拒绝手机浏览器的「网页自动深色/强制反色」：本页只支持浅色。
+       Chrome / Android / 部分国产浏览器看到 color-scheme: light(only) 就不会自动加深色；
+       theme-color 顺带把浏览器工具栏也收成浅色，避免顶栏深、页面浅割裂。 -->
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef1f5">
+  <meta name="supported-color-schemes" content="light">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🏠</text></svg>">
+  <title>HA 3D Home</title>
+  <style>
+    html { color-scheme: light; color-scheme: only light; }
+    html, body { margin: 0; height: 100%; background: #f4f6fa; }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main-index.js"></script>
+</body>
+
+</html>

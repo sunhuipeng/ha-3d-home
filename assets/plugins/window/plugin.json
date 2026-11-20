@@ -1,0 +1,8 @@
+{
+  "id": "window",
+  "name": "窗户",
+  "version": "1.5.3",
+  "kind": "device",
+  "type": "window",
+  "description": "窗框(GLB) + 玻璃扇，推拉窗/对开窗两种造型；主实体（窗磁/智能窗）走「设备绑定」，开度实体走「拓展·实体绑定」，双实体驱动且开度优先（0~100/0~1）；2D 平面符号由插件 plan2d() 自绘。固定窗已拆到 custom/plugins/window_fixed（同 type=\"window\" 聚合进同一个窗样式下拉）"
+}

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!-- 登录页（第三个 Vite 入口）：样式/逻辑拆到 src/login.css + src/login.js。
+     TV 焦点导航复用 src/engine/tvFocus.js（与大屏页同源），App 遥控键经
+     Shell.dispatchTvKey → window.__tvFocus.key(name) 进入。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>登录 · HA 3D Home</title>
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🏠</text></svg>">
+</head>
+<body>
+<div class="card">
+  <div class="logo">🏠</div>
+  <div class="title">HA 3D Home</div>
+  <div class="sub" id="subtitle">登录后查看你的家</div>
+
+  <!-- 模式一：扫码打开的确认页（URL 带 code）——免密确认登录本机 -->
+  <div id="paneConfirm" class="pane">
+    <div class="tip" style="margin-bottom:6px">已通过扫码获取登录凭证，确认登录<b>当前设备</b>？</div>
+    <button id="btnConfirm" class="tv-clickable">确认登录</button>
+    <div class="msg" id="msgConfirm"></div>
+  </div>
+
+  <!-- 模式二：正常登录 —— 账号密码 / 展示二维码 -->
+  <div id="paneMain" class="pane">
+    <div class="tabs">
+      <div class="tab on tv-clickable" data-tab="pass">账号密码</div>
+      <div class="tab tv-clickable" data-tab="qr">扫码登录</div>
+    </div>
+
+    <div id="tabPass" class="pane on">
+      <label for="user">账号</label>
+      <input id="user" class="tv-clickable" autocomplete="username" placeholder="用户名">
+      <label for="pass">密码</label>
+      <input id="pass" class="tv-clickable" type="password" autocomplete="current-password" placeholder="密码">
+      <button id="btnLogin" class="tv-clickable">登录</button>
+      <div class="msg" id="msgLogin"></div>
+    </div>
+
+    <div id="tabQr" class="pane">
+      <div class="qr">
+        <div id="qrWrap" class="qr-wrap tv-clickable" title="点击刷新二维码">
+          <img id="qrImg" alt="登录二维码">
+          <div id="qrMask" class="qr-mask" hidden>
+            <span>二维码已失效</span>
+            <span class="qr-mask-sub">点击刷新</span>
+          </div>
+        </div>
+        <p id="qrHint">请用 App 扫描此二维码</p>
+      </div>
+      <div class="msg" id="msgQr"></div>
+    </div>
+
+    <div class="split"></div>
+    <div class="tip">扫码登录：在 App 内选择扫码，扫描本页二维码即可免密登录</div>
+  </div>
+</div>
+<script type="module" src="/src/login.js"></script>
+</body>
+</html>

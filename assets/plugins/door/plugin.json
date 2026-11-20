@@ -1,0 +1,8 @@
+{
+  "id": "door",
+  "name": "门",
+  "version": "1.6.5",
+  "kind": "device",
+  "type": "door",
+  "description": "门框(GLB) + 门扇(GLB) 组合，单开/双开两种造型；门磁传感器与开度实体都放「拓展·实体绑定」（contactEntityId / posEntityId），主实体（设备绑定）本次留空；门磁/开度驱动开门动画，两个造型都可设「未绑定时只显门框」。2D 平面符号由插件 plan2d() 自绘。卷帘门已拆到 custom/plugins/door_rolling（同 type=\"door\" 聚合进同一个门样式下拉）"
+}

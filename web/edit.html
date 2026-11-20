@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- data-page="edit"：编辑页恒为浅色，不参与展示页的黑暗模式（UI 主题）。
+     style.css 的夜间变量选择器带 :not([data-page="edit"]) 兜底，engine/lighting.js
+     也会跳过这里的 data-theme 写入并固定白天光照；编辑页顶栏不再有夜间开关。 -->
+<html lang="zh-CN" data-page="edit">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 与 index.html 一致：只支持浅色，拒绝浏览器自动深色 -->
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef1f5">
+  <title>HA 3D Home · 编辑</title>
+   <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🏠</text></svg>">
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main-edit.js"></script>
+</body>
+
+</html>

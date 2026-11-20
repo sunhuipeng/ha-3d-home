@@ -1,0 +1,12 @@
+assets/.DS_Store
+backups/
+dist/
+# public/ 是构建产物（Docker 里由 web/dist 拷入；本地起 8077 时也用它托管），
+# 源文件在 web/，不要提交
+public/
+.DS_Store
+node_modules/
+# lockfile 必须提交：Dockerfile 的 web 构建走 npm ci，依赖 web/package-lock.json 才能复现
+*.log
+custom/
+/data/auth-sessions.json

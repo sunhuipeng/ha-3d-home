@@ -1,0 +1,9 @@
+{
+  "id": "wardrobe",
+  "name": "衣柜",
+  "version": "1.0.1",
+  "kind": "device",
+  "type": "furniture",
+  "ftype": "cabinet",
+  "description": "家具（type:'furniture'）的参考示例：不用任何 GLB，纯代码按参数动态建模。styles.options 提供高度/长度/深度三个滑块，门数由长度自动推算（每扇约 0.55m，1~6 扇）；无 HA 实体，缺省无 3D 标签、不可点击、贴地。"
+}

@@ -1,0 +1,28 @@
+{
+  "name": "我的家",
+  "rotUnit": "deg",
+  "floors": [
+    {
+      "id": "f1",
+      "name": "一层",
+      "height": 2.8,
+      "wallOpacity": 45,
+      "walls": [],
+      "doors": [],
+      "windows": [],
+      "furniture": [],
+      "devices": [],
+      "rooms": [],
+      "display": {
+        "dataCards": [],
+        "displayItems": []
+      }
+    }
+  ],
+  "settings": {
+    "background": "",
+    "backgroundOptions": {},
+    "backgroundFields": {},
+    "weatherEntity": ""
+  }
+}

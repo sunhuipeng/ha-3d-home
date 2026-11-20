@@ -1,0 +1,26 @@
+services:
+  ha-3d-home:
+    build: .
+    # 用私有仓库镜像: 删掉上面的 build: .，把下面一行改成
+    # image: <仓库地址>/<命名空间>/ha-3d-home:latest
+    # 然后 docker compose pull && docker compose up -d
+    image: ha-3d-home:latest
+    container_name: ha-3d-home
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./data:/data      # 连接配置 + 户型项目 + 贴图（首启自动写入默认 config.json / project.json）
+      - ./custom:/custom  # 用户自定义模型与插件（models/ plugins/；家具走 studio 发布的家具包 models/<项目id>/），升级不丢
+                          # 内置 assets 不挂载，直接用镜像自带的，升级镜像即升级资产
+    environment:
+      NODE_ENV: production  # 生产模式：不打印日志
+      HA3D_LOG: "0"         # 需要排查时改成 "1" 打开日志
+      PORT: 8099
+      HA3D_DATA_DIR: /data  # 挂载点路径；内置 assets/seed 走镜像内相对路径默认值，无需配置
+      # 登录账号（两项都设才启用门禁；删掉/注释任一项 → 恢复免登录）
+      # 密码建议用 HA3D_AUTH_PASS_HASH（scrypt:<salt>:<hash>），避免明文；见 README
+      HA3D_AUTH_USER: admin
+      HA3D_AUTH_PASS: admin
+    mem_limit: 128m         # 内存上限（实际占用约 40-60MB）
+
