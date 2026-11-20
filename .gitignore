@@ -10,3 +10,4 @@ node_modules/
 *.log
 custom/
 /data/auth-sessions.json
+/data/
