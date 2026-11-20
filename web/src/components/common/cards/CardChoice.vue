@@ -4,9 +4,10 @@
        分段控件（segmented）：浅灰蓝底槽里并排选项，当前值是白色浮起块。
        选项多时整组换行，不挤压标签。原生 button，不依赖 Element Plus。
 
-       防误触（仅窄屏）：原生 button「点即执行」在手机上太容易蹭到，所以读全局
-       viewportWide —— 宽屏保持点即切换；窄屏改成「按住任意位置 → 滑到目标选项 →
-       松手才提交」，原地轻点 / 划出组外 / 系统中断一律零请求。
+       防误触（JS 接管滚动时）：原生 button「点即执行」在触屏上太容易蹭到，所以读全局
+       jsGesture（窄屏 ∥ app 宽屏 TV 模式）—— 这些场景纵向滚动由 JS 分发，必须把
+       点按收成「按住任意位置 → 滑到目标选项 → 松手才提交」；原地轻点 / 划出组外 /
+       系统中断一律零请求。浏览器宽屏保持点即切换（鼠标精确，且滚动是浏览器原生）。
        模式来自 Pinia ui store，与 PanelApp 的手势白名单是同一份真相。 -->
   <div class="dc-row dc-choice" :class="{ dis: dis, sliding: dragId != null }"
     :data-slide="slide ? '1' : null">
@@ -38,13 +39,14 @@ export default {
     return { dragId: null, startX: 0, startY: 0, moved: false, pendingIdx: -1 };
   },
   computed: {
-    ...mapState(useUiStore, ['viewportWide']),
+    ...mapState(useUiStore, ['jsGesture']),
     options() { return this.node._options || []; },
     /* 与 CardSelect 同口径：没 action / 实体不可用都禁用 */
     dis() { return !!(this.node._disabled || !this.node.action); },
-    /* 只有「窄屏 + 可用」才进滑动模式。PanelApp.onStageTouchStart 的白名单读
-       data-slide，与这里同一个判定，不会「页面放行手势但组件还在点选」。 */
-    slide() { return !this.viewportWide && !this.dis; },
+    /* 只有「JS 接管滚动 + 可用」才进滑动模式（窄屏 ∥ app 宽屏 TV 模式）。
+       PanelApp.onStageTouchStart 的白名单读 data-slide，与这里同一个判定，
+       不会「页面放行手势但组件还在点选」。浏览器宽屏则是点即切换。 */
+    slide() { return this.jsGesture && !this.dis; },
     /* 值可能是数字 / 布尔，统一按字符串比对（引擎归一化选项时也是 String） */
     curIdx() {
       return this.options.findIndex((o) => String(o.value) === String(this.node._value));

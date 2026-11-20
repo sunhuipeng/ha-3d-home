@@ -38,6 +38,8 @@ export default {
 .p-room-track {
   display: flex; align-items: center; gap: 4px; padding: 2px;
   background: transparent; border: none; overflow-x: auto; scrollbar-width: none;
+  /* 鼠标滚轮在本条上横向滚动时，不让浏览器把滚动链到下面的 .p-cards-body */
+  overscroll-behavior: contain;
 }
 .p-room-track::-webkit-scrollbar { display: none; }
 .p-room {

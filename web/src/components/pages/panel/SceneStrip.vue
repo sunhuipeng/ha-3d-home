@@ -51,6 +51,8 @@ export default {
   display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; min-width: 0; padding: 2px;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
+  /* 鼠标滚轮在本条上横向滚动时，不让浏览器把滚动链到下面的 .p-cards-body */
+  overscroll-behavior: contain;
 }
 .p-scenes::-webkit-scrollbar { display: none; }
 .p-scene {

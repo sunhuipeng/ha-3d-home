@@ -22,9 +22,11 @@
  * bridge.js 的 installViewportWatcher() 统一安装，跨断点只触发一次。
  */
 import { defineStore } from 'pinia';
-/* 带 .js 后缀：Vite 与 Node 原生 ESM 都能解析，store 可被 node --test 直接加载
-   （v-tap 指令的事件流单测要读 viewportWide）。 */
+/* 带 .js 后缀：Vite 与 Node 原生 ESM 都能解析，store 可被 node --test 直接加载。
+   jsGesture 的纯口径抽在 model/panelGesture.js 的 jsGestureOf()，四组合有单测；
+   这里 getter 直接复用它，避免 store 与测试各写一份布尔式。 */
 import { WIDE_BREAKPOINT } from '../model/stageLayout.js';
+import { jsGestureOf } from '../model/panelGesture.js';
 
 /* toast 的淡出定时器属于实现细节，不需要响应式，也不该进 $state 被序列化。
  * 模块级单例即可：一个页面文档只有一个 Pinia 实例。 */
@@ -52,7 +54,23 @@ export const useUiStore = defineStore('ui', {
      * 初值必须同步算出来：不能默认 false 等 mounted 再修，否则首帧会按
      * 「宽屏直接点」渲染卡片控件，再闪成滑动态。SSR 无 window 时按宽屏处理。 */
     viewportWide: typeof window === 'undefined' ? true : window.innerWidth >= WIDE_BREAKPOINT,
+
+    /* ---- 运行载体：app 壳 / 浏览器（与宽窄正交，两个维度别混） ----
+     * 只认原生桥是否存在：壳内 WebView 在页面脚本执行前注入 window.AppShell，
+     * 普通浏览器恒 undefined。app 内同样有宽屏（TV 模式）和窄屏两种版面，
+     * 所以「要不要 JS 接管手势」必须同时看这两个维度，见 jsGesture。 */
+    inApp: typeof window === 'undefined' ? false : !!window.AppShell,
   }),
+
+  getters: {
+    /* 是否由 JS 手动分发手势（而非交给浏览器原生滚动 / 合成 click）：
+     *   窄屏（app / 浏览器皆然）→ JS 接管：要压缩 3D 带 + 滚卡片；
+     *   app 宽屏（TV 模式）    → JS 接管：3D 铺满左栏，滚右侧卡片栈；
+     *   浏览器宽屏            → 原生：桌面鼠标滚轮 / 原生触摸滚动就够了。
+     * 四处消费同一份：PanelApp 手势四入口、v-tap 点按判定、CardChoice、CardRange。
+     * inApp 是 state init 时的一次性快照：桥只会在页面加载前注入，运行期不变。 */
+    jsGesture() { return jsGestureOf(this.viewportWide, this.inApp); },
+  },
 
   actions: {
     /* 只由 bridge.js 的 matchMedia change 事件调用；写同值 Pinia 不触发重渲染 */

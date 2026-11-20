@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { sceneIcon, SCENE_ICONS } from '../src/model/sceneIcon.js';
 import {
-  stageBounds, clampBand, splitVerticalGesture, sampleMove, flingVelocity,
+  stageBounds, clampBand, jsGestureOf, wheelHScroll, splitVerticalGesture, sampleMove, flingVelocity,
   nextFlingVelocity, flingFrameDt,
 } from '../src/model/panelGesture.js';
 import {
@@ -51,6 +51,33 @@ test('clampBand：取整后夹取，与 _setStageH 同口径', () => {
   assert.equal(clampBand(200.6, 110, 304), 201);
   assert.equal(clampBand(-20, 110, 304), 110);
   assert.equal(clampBand(9999, 110, 304), 304);
+});
+
+test('jsGestureOf：宽窄 × 载体四组合（触摸接管判据，滚轮不读它）', () => {
+  /* 宽窄与 app/浏览器是两个正交维度，任一组合都不能错位：
+     只有「浏览器宽屏」交原生触摸，其余三种都 JS 接管。 */
+  assert.equal(jsGestureOf(false, false), true,  '窄屏浏览器：JS 接管（压缩 3D 带 + 滚卡片）');
+  assert.equal(jsGestureOf(false, true),  true,  '窄屏 app：JS 接管（同上）');
+  assert.equal(jsGestureOf(true,  false), false, '宽屏浏览器：交原生触摸滚动');
+  assert.equal(jsGestureOf(true,  true),  true,  'app 宽屏 TV 模式：JS 接管滚右侧卡片栈');
+  /* inApp 传入非布尔（桥注入的对象/字符串）也归一，不能出现 undefined 判据 */
+  assert.equal(jsGestureOf(true, 1), true);
+  assert.equal(jsGestureOf(true, 0), false);
+});
+
+test('wheelHScroll：横滚条整段吞滚轮，滚到边也不落到卡片', () => {
+  const el = (scrollLeft, scrollWidth, clientWidth) => ({ scrollLeft, scrollWidth, clientWidth });
+  /* 放得下：无溢出 → 不吞滚轮，交还卡片 */
+  assert.deepEqual(wheelHScroll(100, el(0, 300, 300)), { scrollLeft: 0, handled: false });
+  /* 有溢出：下滚右移，上滚左移，handled=true */
+  assert.deepEqual(wheelHScroll(40, el(10, 500, 200)), { scrollLeft: 50, handled: true });
+  assert.deepEqual(wheelHScroll(-40, el(10, 500, 200)), { scrollLeft: 0, handled: true });
+  /* 到边：夹取在 [0, max]，但仍是 handled=true —— 条吞掉滚轮，卡片不许跟着滚 */
+  assert.deepEqual(wheelHScroll(-100, el(0, 500, 200)), { scrollLeft: 0, handled: true });
+  assert.deepEqual(wheelHScroll(100, el(280, 500, 200)), { scrollLeft: 300, handled: true });
+  assert.deepEqual(wheelHScroll(100, el(300, 500, 200)), { scrollLeft: 300, handled: true });
+  /* dy=0 不处理 */
+  assert.deepEqual(wheelHScroll(0, el(10, 500, 200)), { scrollLeft: 10, handled: false });
 });
 
 test('splitVerticalGesture：上滑先压带、压到底再滚卡片', () => {

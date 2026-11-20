@@ -7,18 +7,20 @@
        ② 拖动中只改本地 draft —— 把手、左段填充与右侧数字实时跟随，**不发任何服务请求**；
        ③ 松手（pointerup / pointercancel）或键盘调完（keyup）才 emit 一次 action；
        ④ 发出后 1.2s 内 draft 优先，避免 HA 回推把值弹回旧值。
+       滚轮刻意不拦截（不写 @wheel.stop）：自绘 range 本就不响应 wheel，放行让事件
+       冒泡到 PanelApp 的 document 监听，鼠标停在滑条上也能滚右栏卡片。
        没写 action、实体不可用或 lock 未开机时整条禁用。 -->
   <div class="dc-row dc-range" :class="{ dis: dis }">
     <span class="dc-label">{{ node.label || node.attr || '数值' }}</span>
     <span class="dc-val">{{ shownText }}<i v-if="node.unit">{{ node.unit }}</i></span>
-    <div ref="slider" class="dc-slider tv-clickable" :class="{ active: dragId != null, dis: dis, jump: viewportWide && !dis }"
+    <div ref="slider" class="dc-slider tv-clickable" :class="{ active: dragId != null, dis: dis, jump: !jsGesture && !dis }"
       :data-hit="HIT" role="slider" :tabindex="dis ? -1 : 0" data-tv-role="slider"
       :aria-label="node.label || node.attr || '数值'"
       :aria-valuemin="node._min" :aria-valuemax="node._max" :aria-valuenow="Number(shown)"
       :aria-valuetext="shownText + (node.unit || '')" :aria-disabled="dis ? 'true' : 'false'"
       @pointerdown.stop="onPointerDown" @pointermove="onPointerMove"
       @pointerup="onPointerUp" @pointercancel="onPointerCancel"
-      @keydown="onKeyDown" @keyup="onKeyUp" @wheel.stop>
+      @keydown="onKeyDown" @keyup="onKeyUp">
       <div class="dc-inner">
         <div class="dc-track"></div>
         <div class="dc-fill" :style="fillStyle"></div>
@@ -47,7 +49,7 @@ export default {
     };
   },
   computed: {
-    ...mapState(useUiStore, ['viewportWide']),
+    ...mapState(useUiStore, ['jsGesture']),
     dis() { return !!(this.node._disabled || !this.node.action); },
     /* 拖动中 / 刚发出还没回推 → 用本地值；否则用服务端值。
      * 注意 draft 可能被 watch 清空，这里必须判 null，否则值会跳到量程中点。 */
@@ -110,12 +112,12 @@ export default {
       const x = this.thumbX();
       /* 落在椭圆把手中心 ±HIT 内 = 按在把手上 */
       const onThumb = x != null && Math.abs(e.clientX - x) <= HIT;
-      /* 窄屏：没按在把手上就完全不响应 —— 不 capture、不写草稿、不提交，
-         手指继续滑动照常走页面手势，不会碰到滑条就改值（防误触核心）。
-         宽屏：放开限制，像原生 range 一样点轨道任意位置直接定位 —— 鼠标是精确
-         指针，不存在蹭一下的问题。按下即把值跟到手指处，拖动继续跟手，
-         松手才 commit 发一次 action（点一下和按住拖是同一条路径，不会发两次）。 */
-      if (!onThumb && !this.viewportWide) return;
+      /* JS 接管滚动时（窄屏 ∥ app 宽屏 TV 模式）：没按在把手上就完全不响应 ——
+         不 capture、不写草稿、不提交，手指继续滑动照常走页面手势，不会碰到滑条就改值
+         （防误触核心）。浏览器宽屏：放开限制，像原生 range 一样点轨道任意位置直接
+         定位 —— 鼠标是精确指针，不存在蹭一下的问题。按下即把值跟到手指处，拖动继续
+         跟手，松手才 commit 发一次 action（点一下和按住拖是同一条路径，不会发两次）。 */
+      if (!onThumb && this.jsGesture) return;
       e.preventDefault();
       const el = this.$refs.slider;
       this.dragId = e.pointerId;

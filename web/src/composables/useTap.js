@@ -34,11 +34,14 @@ const HAS_POINTER = typeof window !== 'undefined'
    否则一次异常序列会把按钮永久卡在「点不动」。只用于关联事件，不是防误触时间窗。 */
 const TAP_CLICK_WINDOW_MS = 700;
 
-/* 版面模式从 ui store 取，与卡片控件 / 手势白名单是同一份真相。
+/* 点按判定模式从 ui store 的 jsGesture 取，与卡片控件 / PanelApp 手势白名单是同一份真相。
+   jsGesture = 窄屏 ∥ app 壳（含 TV 宽屏）—— 这些场景纵向滚动由 JS 手动分发，
+   必须把 click 判定收回 pointer 序列，否则滚动后补发的 click 会误触发按钮。
+   只有「浏览器宽屏」走原生 click（那里滚动也是浏览器原生，没有合成 click 风险）。
    两个入口都在 mount 前 app.use(pinia)，事件回调执行时 activePinia 已就位；
    读不到（单测 / 独立渲染）时按宽屏处理，行为退化为原生 click。 */
 function defaultNarrow() {
-  try { return !useUiStore().viewportWide; }
+  try { return useUiStore().jsGesture; }
   catch (_) { return false; }
 }
 
@@ -136,7 +139,7 @@ function createState(el, handler, isNarrow, hasPointer) {
 }
 
 /**
- * 工厂：默认实现读 ui store 的 viewportWide；单测可注入 isNarrow / hasPointer，
+ * 工厂：默认实现读 ui store 的 jsGesture；单测可注入 isNarrow / hasPointer，
  * 在零浏览器的 Node 里把整条 pointer 事件流跑一遍（见 tests/v-tap-directive.test.mjs）。
  */
 export function createTapDirective(opts = {}) {

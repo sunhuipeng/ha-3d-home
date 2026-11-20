@@ -20,6 +20,35 @@ export function stageBounds(H) {
   return { max, min };
 }
 
+/**
+ * 触摸手势由谁接管（jsGesture 的纯口径）——零 Vue / window，直接单测四组合。
+ * 两个正交维度：viewportWide = 版面宽窄，inApp = 运行载体（app 壳 / 浏览器）。
+ *   !wide          窄屏：app / 浏览器都要 JS 压缩 3D 带 + 滚卡片；
+ *    wide && inApp  app 宽屏（TV 模式）：JS 接管滚右侧卡片栈；
+ *    wide && !inApp 浏览器宽屏：交浏览器原生触摸滚动。
+ * 注意鼠标滚轮【不】读这个函数：PC 宽屏滚轮一律由 PanelApp.onStageWheel 主动接管，
+ * 与触摸的接管判据解耦（见 PanelApp.vue 的 onStageWheel 注释）。
+ */
+export function jsGestureOf(viewportWide, inApp) {
+  return !viewportWide || !!inApp;
+}
+
+/**
+ * 竖向滚轮落在横滚条（.p-scenes 展示项 / .p-room-track 房间）上时，映射成横向滚动。
+ * 与触摸横滚用同一份元素白名单，窄屏 / 宽屏都生效。纯计算，收一个像 scroll 元素的
+ * { scrollLeft, scrollWidth, clientWidth }，可在 Node 里直接单测。
+ *   - 条有横向溢出 → handled=true（吞掉本次滚轮）：能挪就挪，已到边就停在边界，
+ *     绝不再把滚轮让给下面的卡片（横滚区只滚横条，用户要求，否则滚房间时卡片乱跳）；
+ *   - 条完全放得下（无溢出）→ handled=false，交还调用方继续走纵向卡片分发。
+ * deltaY 正（下滚）→ 内容右移（scrollLeft 增大），与原生横滚条对滚轮的方向一致。
+ */
+export function wheelHScroll(dy, { scrollLeft, scrollWidth, clientWidth }) {
+  const max = scrollWidth - clientWidth;
+  if (!(max > 0) || !dy) return { scrollLeft, handled: false };
+  const next = Math.max(0, Math.min(max, scrollLeft + dy));
+  return { scrollLeft: next, handled: true };
+}
+
 /* _setStageH 的夹取口径（取整后才落值）：抽出来给纵向分发复用，避免两处各算一套 */
 export function clampBand(px, min, max) {
   return Math.max(min, Math.min(max, Math.round(px)));

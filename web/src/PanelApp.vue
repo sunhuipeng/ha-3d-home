@@ -1,5 +1,5 @@
 <template>
-  <div class="p-shell" v-if="project">
+  <div class="p-shell" :class="{ 'p-touch-js': jsGesture }" v-if="project">
     <stage-surface :floors="floors" :floor-idx="floorIdx" :floor-busy="floorBusy"
       :slow="isSlow" :stage-ready="stageReady" @select-floor="selectFloor" />
 
@@ -61,7 +61,8 @@ import {
 } from './model/stageLayout';
 /* 阶段 0：纯计算搬到 model/ 下（零 Vue/DOM/THREE，可 Node 单测），本文件只留副作用壳 */
 import {
-  stageBounds, splitVerticalGesture, sampleMove, flingVelocity, nextFlingVelocity, flingFrameDt,
+  stageBounds, clampBand, jsGestureOf, wheelHScroll,
+  splitVerticalGesture, sampleMove, flingVelocity, nextFlingVelocity, flingFrameDt,
 } from './model/panelGesture';
 /* 窄屏点按判定：滚动是 JS 分发的，浏览器仍会合成 click。这里把「本次手势是否
    已经滚动」「惯性是否还在跑」写成唯一真相，v-tap 在抬手时读它决定要不要提交。 */
@@ -156,7 +157,7 @@ export default {
     /* 版面模式统一从 ui store 取（原 data().wide 已删）：卡片控件的交互模式、
        窄屏手势白名单、本页 HUD 与取景共用同一份真相，跨断点不会出现
        「页面已放行手势但组件还在点选态」的错位。 */
-    ...mapState(useUiStore, { wide: 'viewportWide' }),
+    ...mapState(useUiStore, { wide: 'viewportWide', inApp: 'inApp', jsGesture: 'jsGesture' }),
 
     /* 回前台 / 断线后正在重连：以前页面完全没有反馈，只会显得「卡住几秒」。
      * 只认 status 事件里的 retrying 标志，首屏连接中不会弹这条。 */
@@ -167,8 +168,6 @@ export default {
 
     /* 是否允许使用空壳原生桥：只看 AppShell 是否存在 —— 原生桥只在壳的 WebView 里
        注入，普通浏览器恒 undefined，不会误触发；URL 无需追加任何参数 */
-    inApp() { return typeof window !== 'undefined' && !!window.AppShell; },
-
     /* 慢设备：壳内 WebView（性能普遍弱）∥ 触屏设备（手机/平板浏览器）。
        pointer:coarse = 主输入是手指 —— 正好把「机器强但窗口窄」的 PC 排除在外。
        用于切层遮罩流程里「等遮罩上屏」的 50ms 缓冲只在慢设备上执行；
@@ -720,12 +719,16 @@ export default {
       });
     },
 
-    /* 断点/视口变化：宽屏清掉内联变量（宽屏布局不用这条带）；窄屏按原比例重建上下限 */
+    /* 断点/视口变化：浏览器宽屏清掉内联变量（宽屏布局不用这条带）；
+       app 宽屏（TV 模式）虽也清带，但要保留 JS 手势所需的 _cards 引用。 */
     syncStageBandForViewport() {
       this._visH = null;                   // 断点/视口变化：显示区域 DOM 位置要重测
       if (this.wide) {
         this._flingStop();                   // 断点变了：JS 接管的手势/惯性都不再适用
         if (this._shell) this._shell.style.removeProperty('--p-band');
+        /* app 宽屏仍由 JS 接管卡片滚动（jsGesture 含 inApp），必须让 _cards 指向
+           新的 .p-cards-body，否则滚卡片时容器是 null，表现就是「滑不动」。 */
+        if (this.inApp && this._stageEnsure()) return;
         return;
       }
       if (!this._stageEnsure()) return;
@@ -742,7 +745,7 @@ export default {
       /* 新的一轮触摸：清掉上一次的「已滚动」标记。v-tap 的 pointerdown 早于
          touchstart，它快照的是惯性状态，两处时序互不干扰。 */
       beginGesture();
-      if (this.wide || !e.touches || e.touches.length !== 1) return;
+      if (!this.jsGesture || !e.touches || e.touches.length !== 1) return;
       const shell = (e.target instanceof Element) ? e.target.closest('.p-shell') : null;
       if (!shell) return;
       /* 卡片滑块（CardRange.vue 自绘 range）只放行「按在把手上」的触摸：命中半径读
@@ -773,7 +776,18 @@ export default {
          （与 CSS .p-shell::after 的 top 一致）。上面那块 3D 区完全不接管，
          手指照样交给 OrbitControls 旋转。 */
       this._gesture = null;
-      if (t.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) return;
+      if (this.wide) {
+        /* app 宽屏（TV 模式）：3D 铺满左栏、卡片在右竖栏，没有「3D 带下沿」这条线。
+           只接管右栏（卡片 / 场景条 / 房间条）上的手势；左栏 3D 照旧交 OrbitControls。
+           命中不足时（如点在中缝）宁可不接管，交原生也不出错。 */
+        const right = (e.target instanceof Element)
+          ? e.target.closest('.p-cards, .p-scenes, .p-rooms') : null;
+        if (!right) return;
+      } else if (t.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) {
+        /* 窄屏：羽化渐变层及其以下才接管；起点 = 3D 带下沿往上 18px
+           （与 CSS .p-shell::after 的 top 一致），上面的 3D 区交 OrbitControls。 */
+        return;
+      }
       this._gesture = {
         x0: t.clientX, y0: t.clientY, lastX: t.clientX, lastY: t.clientY,
         mode: '',
@@ -792,7 +806,7 @@ export default {
 
     onStageTouchMove(e) {
       const g = this._gesture;
-      if (!g || this.wide || !e.touches || e.touches.length !== 1) return;
+      if (!g || !this.jsGesture || !e.touches || e.touches.length !== 1) return;
       const t = e.touches[0];
       /* 与 v-tap 共用同一个 8px 阈值：累计位移越过阈值才把本次触摸写成「滚动」。
          不能用下面 g.mode 的 4/6px 方向判定 —— 那会让轻点时的手抖把按钮一起否决。 */
@@ -822,9 +836,16 @@ export default {
     },
 
     /* 纵向增量分发（同一手势内跨阶段连续）：
-       上滑先压 3D 带，压到最小后把剩余位移喂给卡片滚动；下滑反向，卡片先回到顶再放开 3D 带。 */
+       窄屏上滑先压 3D 带，压到最小后把剩余位移喂给卡片滚动；下滑反向。
+       app 宽屏（TV 模式）没有可压缩的带（3D 铺满左栏、卡片在右竖栏），
+       位移全部直接喂给卡片滚动 —— 否则用户上滑卡片时会去改一个不存在的带，
+       卡片纹丝不动（本次修复）。 */
     _stageGesture(dy, quick) {
       const body = this._cards;
+      if (this.wide) {
+        if (body && dy) body.scrollTop += dy;
+        return;
+      }
       /* 纯拆分在 model/panelGesture.js（可单测）：算出目标 3D 带高度与 scrollTop，
          这里只负责把结果写回 CSS 变量 / 滚动容器 */
       const r = splitVerticalGesture(dy, {
@@ -851,7 +872,7 @@ export default {
         const t = e.target;
         if (t instanceof Element && t.closest('.p-shell')) e.preventDefault();
       }
-      if (!allowFling || this.wide || !g || !g.mode) return;
+      if (!allowFling || !this.jsGesture || !g || !g.mode) return;
       const now = (typeof performance !== 'undefined' && performance.now)
         ? performance.now() : Date.now();
       /* 慢慢拖到位、停住再松手 → 不该再滑一段；采样窗口 / 限速 / 阈值都在纯函数里 */
@@ -902,14 +923,41 @@ export default {
       if (this._bandDirty) this._bandRefocus();
     },
 
-    /* 桌面窄窗口调试用：滚轮与触摸同一套分发逻辑（wheel 不受 touch-action 管，仍需 preventDefault） */
+    /* 滚轮：宽屏（PC 浏览器 / app TV 模式）与窄屏都主动接管，把纵向滚轮喂给
+       卡片滚动 —— 这是 PC 宽屏支持鼠标滚轮的关键（不能像触摸那样按 jsGesture
+       把浏览器宽屏放掉，否则滚轮只滚到 .p-shell 的 overflow:hidden 就到头了）。
+       与触摸的区别只在判据：触摸交不交原生看 jsGesture，滚轮一律自己来。
+       例外：鼠标停在横滚条（展示项 / 房间）上时，纵向滚轮只喂该条的 scrollLeft，
+       条有溢出就整段吞掉（滚到边也不落到卡片，否则滚房间时卡片会跟着乱跳），
+       放得下的条才回落到卡片。与触摸横滚用同一份元素白名单。 */
     onStageWheel(e) {
       const shell = (e.target instanceof Element) ? e.target.closest('.p-shell') : null;
-      if (this.wide || !shell) return;
+      if (!shell) return;
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // 横向滚轮放行给横滚容器
+      /*          横滚条优先：竖向滚轮映射到 scrollLeft；条滚到边（handled=false）再往下走卡片。
+         用 scrollWidth/clientWidth 判断真实溢出，元素放得下时不吞滚轮。 */
+      if (e.deltaY) {
+        const hs = (e.target instanceof Element)
+          ? e.target.closest('.p-scenes, .p-room-track') : null;
+        if (hs) {
+          const r = wheelHScroll(e.deltaY, hs);
+          if (r.handled) {
+            hs.scrollLeft = r.scrollLeft;
+            if (e.cancelable) e.preventDefault();
+            return;
+          }
+        }
+      }
       if (!this._stageEnsure()) return;
-      /* 与触摸同口径：3D 带内不接管，滚轮留给 OrbitControls 缩放 */
-      if (e.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) return;
+      if (this.wide) {
+        /* app 宽屏：滚轮也只接管右栏（卡片 / 场景 / 房间），左栏留给 OrbitControls */
+        const right = (e.target instanceof Element)
+          ? e.target.closest('.p-cards, .p-scenes, .p-rooms') : null;
+        if (!right) return;
+      } else if (e.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) {
+        /* 窄屏：3D 带内不接管，滚轮留给 OrbitControls 缩放 */
+        return;
+      }
       if (e.deltaY) this._stageGesture(e.deltaY);
       if (e.cancelable) e.preventDefault();
     },
@@ -1040,6 +1088,11 @@ export default {
   gap: 8px; color: var(--ink2); font-size: 14px;
 }
 .p-empty a { color: var(--blue); font-size: 13px; }
+
+/* JS 接管手势时（窄屏 + app 宽屏 TV 模式）关掉浏览器原生触摸滚动，
+   否则 WebView 原生与 JS 分发抢手势，卡片滑不动。PC 浏览器宽屏无此 class，
+   原生触摸照常；鼠标滚轮由 onStageWheel 无条件接管，不受 touch-action 影响。 */
+.p-shell.p-touch-js { touch-action: none; }
 
 /* ---------- 窄屏：内容区坐一张白纸，纸上沿向 3D 羽化 ---------- */
 @media (max-width: 1023px) {

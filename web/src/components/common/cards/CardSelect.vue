@@ -1,9 +1,11 @@
 <template>
   <!-- 下拉单选：_options 由引擎归一化成 [{value,label}]（插件可写静态中文表，也可写 'attr:source_list'）。
-       用下标做 option 的 value，回传时还原原始值 —— 这样 option 里的布尔 / 数字不会被转成字符串。 -->
+       用下标做 option 的 value，回传时还原原始值 —— 这样 option 里的布尔 / 数字不会被转成字符串。
+       滚轮刻意不拦截（不写 @wheel.stop）：放行冒泡到 PanelApp 的 document 监听，
+       鼠标停在下拉框上也能滚右栏卡片；onStageWheel 的 preventDefault 会挡住滚轮误改选项值。 -->
   <div class="dc-row dc-select" :class="{ dis: dis }">
     <span class="dc-label">{{ node.label || node.attr || '选项' }}</span>
-    <select class="tv-clickable" :value="selected" :disabled="dis" @change="onChange" @pointerdown.stop @wheel.stop>
+    <select class="tv-clickable" :value="selected" :disabled="dis" @change="onChange" @pointerdown.stop>
       <option v-if="selected < 0" value="-1" disabled>--</option>
       <option v-for="(o, i) in node._options" :key="i" :value="i">{{ o.label }}</option>
     </select>
