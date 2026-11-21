@@ -116,6 +116,7 @@ export default {
        集中在 composables（vm.xxx 延迟取值，Options API 的 data/computed 照旧可读） */
     const derived = useDisplayDerived({
       floor: () => vm.cur,
+      floors: () => vm.floors,
       selection: () => vm.sel,
       revision: () => vm.pluginRevision,
     });
@@ -179,7 +180,9 @@ export default {
     },
     /* 阶段 2：roomTabs / activeId / isAll / onCount / deviceTotal / scopeDevices /
        scopeTotal / scopeOn / displayItems / statusText / netClass / cardKey 全部由
-       useDisplayDerived() 提供，不再在本页各写一份 + void entVersion。 */
+       useDisplayDerived() 提供，不再在本页各写一份 + void entVersion。
+       统计双口径：顶栏 onCount/deviceTotal = 全家所有楼层；卡片头 scopeOn/scopeTotal
+       = 当前楼层（再按全屋/房间收窄），两者用同一把 HA.deviceIsOn 尺子。 */
   },
 
   methods: {

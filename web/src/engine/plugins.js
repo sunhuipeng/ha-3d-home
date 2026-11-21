@@ -1296,6 +1296,10 @@ export const PluginEngine = {
       /* 发光灯 kit: 灯泡 + 双层光晕 + 点光源 + 方向性聚光（灯具类插件用）
        * set(on, rgb, bright?) 一键切换；bright 不传时引擎自己读实体 brightness，
        * 让 1%~100% 亮度在光晕/自发光/点光上都连续变化。全局参数见 LAMP_GLOW。
+       * ⚠ 纯光效 mesh（bulb/emitter/halo/core/beam）下面都打 userData.noPick：
+       *   它们面积远大于灯体，且 Three r160 raycast 不看 visible（关灯隐藏的
+       *   光锥照样命中）—— view3d.pick 据此跳过，点光不触发开关。
+       *   真实灯体（插件造型）与锚点热球不带该标记，仍可点。
        * opts.dir 发光方向:
        *   'down'  向下锥形扩散（吸顶灯/吊灯/筒灯——从天花板向地面和四周）
        *   'wall'  向墙外斜下扩散（壁灯，局部 +Z 为墙外方向）
@@ -1310,6 +1314,7 @@ export const PluginEngine = {
         bulbMat.emissiveIntensity = 0;
         const bulb = new T.Mesh(new T.SphereGeometry(LAMP_GLOW.bulbRadius, 16, 12), bulbMat);
         bulb.position.y = y;
+        bulb.userData.noPick = true;
         /* 贴面发光（主角）：按灯的形状生成发光面，作为 parent 子对象 → 跟着灯一起旋转，
          * 位置贴在灯体上、形状匹配灯型；关灯隐藏、开灯随亮度/rgb 变化。
          * opts.emitter: { shape:'disc'|'rect'|'bar', w, h, y, extra:{x,z,rx,ry,rz} }
@@ -1338,6 +1343,7 @@ export const PluginEngine = {
           if (em.extra && em.extra.rz) mesh.rotation.z = em.extra.rz;
           mesh.renderOrder = 1;
           mesh.visible = false;
+          mesh.userData.noPick = true;
           parent.add(mesh);
           emitter = { mesh, m: emMat };
         }
@@ -1349,6 +1355,7 @@ export const PluginEngine = {
           const s = new T.Sprite(m);
           s.position.y = y;
           s.renderOrder = order;
+          s.userData.noPick = true;
           parent.add(s);
           return { m, s };
         };
@@ -1440,6 +1447,7 @@ export const PluginEngine = {
             cone.position.set(ex, ey, ez);
             cone.rotation.x = tilt;                          // 壁灯绕锥顶朝墙外斜下
             cone.renderOrder = 0;
+            cone.userData.noPick = true;
             parent.add(cone);
             beam = { mesh: cone, m: mat, strength: bc.opacity != null ? bc.opacity : LAMP_GLOW.beamOpacity };
           }

@@ -27,7 +27,7 @@ import { useHaStore } from '../stores/ha';
 import { haIconOf } from '../services/haIcon';
 import { sceneIcon } from '../model/sceneIcon';
 import {
-  devicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
+  allDevicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
   statusTextOf, netClassOf, cardKeyOf, isAllOf, activeIdOf,
 } from '../model/displayDerived.js';
 
@@ -35,6 +35,7 @@ export function useDisplayDerived(opts = {}) {
   const haStore = opts.haStore || useHaStore();
   const ha = opts.ha || (() => (typeof window !== 'undefined' ? window.HA : null));
   const floor = opts.floor || (() => null);
+  const floors = opts.floors || (() => null);
   const selection = opts.selection || (() => null);
   const haStatus = opts.haStatus || (() => haStore.haStatus);
   const revision = opts.revision || (() => 0);
@@ -49,12 +50,18 @@ export function useDisplayDerived(opts = {}) {
     return !!(A && A.deviceIsOn && A.deviceIsOn(d));
   };
 
+  /* 顶栏统计：全家口径 —— 分母分子都取所有楼层的设备，切层不跟随。
+     没注入 floors 时回退到当前楼层一份（兼容旧调用方）。 */
+  const allDevices = computed(() => {
+    const fs = floors();
+    return allDevicesOf(Array.isArray(fs) && fs.length ? fs : [floor()]);
+  });
   const onCount = computed(() => {
     deps();
-    return countOn(devicesOf(floor()), isOn);
+    return countOn(allDevices.value, isOn);
   });
   /* 分母只跟项目数据走，不依赖 HA 推送 */
-  const deviceTotal = computed(() => devicesOf(floor()).length);
+  const deviceTotal = computed(() => allDevices.value.length);
 
   const scopeDevices = computed(() => {
     deps();

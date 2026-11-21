@@ -25,6 +25,19 @@ export function devicesOf(fl) {
   return (fl && fl.devices) || [];
 }
 
+/* 全家设备（顶栏统计分母）：所有楼层的 devices 依次展开成一个新数组。
+   floors 为空 / 某层没有 devices 都按空处理；选层不影响分子分母，
+   切到任意楼层左上角都显示同一份全家统计。与 devicesOf 一样返回新数组，
+   避免下游 computed 因引用不变而不重算。 */
+export function allDevicesOf(floors) {
+  const out = [];
+  (Array.isArray(floors) ? floors : []).forEach((fl) => {
+    const devs = (fl && fl.devices) || [];
+    for (let i = 0; i < devs.length; i++) out.push(devs[i]);
+  });
+  return out;
+}
+
 /* 选中范围内的设备集合：房间 / 单设备 / 门窗 / 全屋（含 kind 未知、楼层为空） */
 export function scopeDevicesOf(fl, sel) {
   if (!fl) return [];

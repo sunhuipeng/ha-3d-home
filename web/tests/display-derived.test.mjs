@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  devicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
+  devicesOf, allDevicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
   statusTextOf, netClassOf, cardKeyOf, isAllOf, activeIdOf,
 } from '../src/model/displayDerived.js';
 import {
@@ -100,6 +100,23 @@ test('devicesOf：空楼层 / 有设备两种口径', () => {
   assert.equal(devicesOf(null).length, 0);
   assert.equal(devicesOf({ devices: [] }).length, 0);
   assert.equal(devicesOf(floor).length, 3);
+});
+
+test('allDevicesOf：全家统计 = 所有楼层设备，切层不影响范围', () => {
+  const f1 = { devices: [{ id: 'a', on: true }, { id: 'b', on: false }] };
+  const f2 = { devices: [{ id: 'c', on: true }] };
+  const f3 = { rooms: [] };                                   // 无 devices 的楼层
+  const all = allDevicesOf([f1, f2, f3]);
+  assert.deepEqual(all.map((d) => d.id), ['a', 'b', 'c']);
+  assert.equal(countOn(all, isOn), 2);                        // 分子：全家在运行的
+  assert.notEqual(all, f1.devices, '必须返回新数组');
+  /* 空值 / 非数组兜底 */
+  assert.deepEqual(allDevicesOf(null), []);
+  assert.deepEqual(allDevicesOf([]), []);
+  assert.deepEqual(allDevicesOf([null, {}]), []);
+  /* 与「当前楼层」口径确实不同：只取一层时不会把另一层的设备算进来 */
+  assert.deepEqual(allDevicesOf([f1]).map((d) => d.id), ['a', 'b']);
+  assert.equal(countOn(allDevicesOf([f1]), isOn), 1);
 });
 
 test('scopeDevicesOf：五种选中态，且全屋恒返回新数组', () => {

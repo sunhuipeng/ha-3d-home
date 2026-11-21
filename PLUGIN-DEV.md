@@ -150,6 +150,35 @@ refresh > 0      → 按 Hz 节流调 apply 返回值里的 update(t, api)（时
 
 > `kit.set(on, rgb, bright?)` 第三参可选（0~1）；不传时引擎自动读主实体 `attributes.brightness`，让光晕 / 自发光 / 点光 / 聚光都随亮度连续变化，与房间地面亮度同口径。光晕是「外晕 + 亮核」两层 Additive Sprite，全局观感参数集中在 `web/src/engine/plugins.js` 的 `LAMP_GLOW`——**调整体灯够不够亮只改那里**，不要在插件里另画一套光效（7 种灯型与所有用 `lightKit` 的插件共用）。
 
+#### 纯视觉 / 纯动效几何：`userData.noPick` / `userData.pickBlock`
+
+引擎判定「点到了哪台设备」的规则是：射线按距离近→远命中设备组子树里的 mesh，沿父链找到 `userData.device` 就算点到这台设备——它不区分命中的是灯罩、灯周围的一团光，还是锅口上飘的蒸汽。所以要用**两级拾取标记**把纯视觉 / 纯动效几何排除掉：
+
+> **约定：纯视觉、纯动效、不对应实体本体的几何一律打标——贴本体打 `userData.noPick = true`，飘离本体打 `userData.pickBlock = true`。**
+
+| 标记 | 适用几何 | 命中后的判定 |
+|---|---|---|
+| `userData.noPick = true` | **贴着本体的光效 / 动效**：光晕 / 光斑 / 光束 Sprite、体积光锥、贴面发光面、灯泡球、发热圈红光、呼吸光环、罩内翻炒食材等 | 废弃该命中，**继续沿射线找更远的真实本体**（点光效 = 点本体） |
+| `userData.pickBlock = true` | **飘离本体的动效**：锅口蒸汽、锅盖蒸汽粒子、烤箱向外辐射的热浪、出气口蒸汽、上飘的光点等 | 命中即**整条射线作废**（返回 null，不再往后找；点动效 = 点空白） |
+
+- **不打标**（仍可点）：实体本体的造型（灯罩、面板、门板、按钮、机身）与引擎的锚点热球。
+- **为什么飘离本体必须 `pickBlock`**：它飘在设备上方 / 前方，下面 / 后方往往就是本体；只打 `noPick` 会被跳过、继续命中本体，照样误开关。`pickBlock` 直接把整条射线作废才不会误触发。
+- **优先级**：逐个命中沿父链向上判定，**`pickBlock` 优先于 `noPick`**（同一 mesh 同时打了两个标记时按 `pickBlock` 处理）；命中顺序由 raycaster 按距离排好近→远。纯函数实现见 `web/src/model/pick.js` 的 `deviceFromHits()`，studio 预览引擎见 `client/src/engine/three-host.js` 的 `pickAt()`。
+- `ctx.lightKit()` 生成的 bulb / emitter / halo / core / beam **引擎已自动打 `noPick`**，用 `lightKit` 的插件无需处理。自己用 `ctx.box/cyl/sphere`、`THREE.Sprite` 或自定义几何画光效 / 动效的插件，要自己给这些 mesh 打标：
+
+  ```js
+  const halo = new THREE.Sprite(mat);
+  halo.userData.noPick = true;     // 贴本体光效：跳过，继续找本体
+  g.add(halo);
+
+  const steam = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
+  steam.userData.pickBlock = true; // 飘离本体的蒸汽：命中即整条射线作废
+  g.add(steam);
+  ```
+
+- **不能靠 `visible=false` 代替打标**：Three r160 的 `raycaster` 递归只检查 `layers`，**不检查 `visible`**——关灯时隐藏的光锥、透明度为 0 的光晕仍在射线里，照样会被点中（表现为"点灯周围也能开关"）。动画里改 `opacity` / `visible` 都不影响拾取，必须打标。
+- 判定口诀：**这个 mesh 是实体本身吗？** 是 → 可点；只是发光 / 贴着主体的动效 → `noPick`；飘离主体、下方 / 后方还有本体的动效 → `pickBlock`。
+
 #### 读实体状态
 
 > **`eid` 是什么**：插件里它只来自两个地方 —— **主实体 `ctx.obj.entityId`**（用户给该实例绑定的 HA 实体，最常用）和 **拓展实体 `ctx.obj.<字段>`**（`fields` 声明的绑定值，如 `ctx.obj.posEntityId`）。不要自己拼实体 id。
@@ -951,6 +980,7 @@ cards() {
 - 🃏「卡片」开关只管卡片面板 / 预览浮层的显隐（`PREF_KEYS.displayCards` / `editorCards`），**不再影响点击行为**；关着时点设备仍会更新选中态，再打开就能看到。
 - 唯一特例：展示页窄屏（< 1024px，含 HA App 的 WebView）强制不显示标签，于是按上表自然落到「点设备 = 执行」；顶栏的标签开关在窄屏也隐藏。
 - 标签能否点、点下去发什么服务，仍由插件 `click` 规格与实例属性面板的「启用点击」决定（见 2.3），与页面模式无关。
+- **点"设备周围的光 / 蒸汽"也会开关？** 那是纯视觉 / 动效几何没打标——射线把它们当成设备本体了。贴着本体的光晕 / 光锥 / 发光面 / 呼吸动效打 `userData.noPick = true`（作废该命中、继续找本体）；飘离本体的蒸汽 / 热浪 / 上飘粒子打 `userData.pickBlock = true`（命中即整条射线作废，否则跳过会命中下方本体照样开关）。`lightKit` 生成的引擎已自动打 `noPick`，详见 1.2「纯视觉 / 纯动效几何：`userData.noPick` / `userData.pickBlock`」。
 
 ## 3. 门 / 窗（`type: 'door'` / `'window'` 的贴墙设备）
 

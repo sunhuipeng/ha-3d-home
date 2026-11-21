@@ -10,6 +10,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { HA } from '../services/ha.js';
 import { furnSpec, deviceDefaultZ, devTypeOf, DEFAULT_FLOOR_H } from '../model/catalog.js';
+import { deviceFromHits } from '../model/pick.js';
 import { PluginEngine, DEFAULT_OPENING_W } from './plugins.js';
 import { applyLegacyRenderer } from './three-legacy.js';
 
@@ -1661,18 +1662,14 @@ export const View3D = {
    * 拾取 = 对所有可点击模型根 Group（设备 + 门/窗）递归 raycast（点模型任意部位都算：
    * 灯罩/灯杆/底盘/门板…），命中 mesh 沿父链回溯找带 userData.device 的设备组；
    * 类型在 userData.devType（门/窗实例数据没有 type 字段，建造时写入）。
-   * 不再只依赖锚点热球 —— 球只有 0.32m 半径，高设备（落地灯灯罩 1.5m+）点上去毫无反应 */
+   * 不再只依赖锚点热球 —— 球只有 0.32m 半径，高设备（落地灯灯罩 1.5m+）点上去毫无反应。
+   * ⚠ 纯光效 mesh（光晕 Sprite / 光锥 / 贴面发光 / 灯泡，由 lightKit 打 userData.noPick）
+   *   不参与拾取：它们面积远大于灯体，且 Three r160 的 raycast 不看 visible，
+   *   关灯时隐藏的光锥仍会命中 —— 点"灯周围的光"会误开关。沿父链遇到 noPick 就
+   *   跳过该 hit，继续看射线更远处的真实灯体；锚点热球不带标记，保底热区不受影响。 */
   pick(e) {
     this.raycaster.setFromCamera(this.ndcOf(e), this.camera);
-    const hits = this.raycaster.intersectObjects(this.pickGroups, true);
-    for (let i = 0; i < hits.length; i++) {
-      let o = hits[i].object;
-      while (o) {
-        if (o.userData && o.userData.device) return o;
-        o = o.parent;
-      }
-    }
-    return null;
+    return deviceFromHits(this.raycaster.intersectObjects(this.pickGroups, true));
   },
 
   ndcOf(e) {
