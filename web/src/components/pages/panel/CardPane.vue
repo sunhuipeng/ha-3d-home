@@ -68,7 +68,7 @@ export default {
 .p-cards-body :deep(.dc-tile),
 .p-cards-body :deep(.dc-dev) { background: var(--tile-soft); }
 
-@media (max-width: 1023px) {
+@media (max-width: 767px), (max-width: 1023px) and (max-height: 449px), (max-width: 1023px) and (max-aspect-ratio: 1299/1000) {
   /* 卡片区通栏贴底；白底由上面那张纸提供，卡片自己不再叠一层白，避免两块白拼出硬边 */
   .p-cards { margin: 0 -10px -10px; }
   .p-cards-head { padding: 2px 12px 8px; }
@@ -77,7 +77,7 @@ export default {
   .p-cards-body :deep(.dc-body) { background: var(--body-soft); }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .p-cards-head { padding: 2px 14px 8px 4px; }
   /* 卡片贴住右侧与底部：圆形/投影/自己那层白全收掉，纸面统一由这块竖栏提供
      （否则「竖栏 0.78 白 + 卡片 0.86 白」两层叠在一起，卡片左沿会露出一条竖台阶） */

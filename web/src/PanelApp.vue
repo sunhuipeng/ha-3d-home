@@ -55,7 +55,7 @@ import { PREF_KEYS, prefBool, prefSetBool, prefInt, prefSetInt } from './service
 /* 版面 / 取景 / 手势的全部常量集中在 model/stageLayout.js（JS 侧唯一出处）。
  * CSS 里的 1024 / 340 / .38 无法引用 JS，改动时须两边同步。 */
 import {
-  WIDE_BREAKPOINT, STAGE_BAND_INIT,
+  isWideViewport, STAGE_BAND_INIT,
   FILL_STAGE_WIDE, FILL_STAGE_INIT, FILL_STAGE_GAIN,
   FILL_ROOM_WIDE, FILL_ROOM_GAIN, SMOOTH_K,
 } from './model/stageLayout';
@@ -337,7 +337,7 @@ export default {
        再按剩余高度重新取景 —— 全程只动相机，不动画布、不 resize。 */
     stageMetrics() {
       const W = window.innerWidth || 1, H = window.innerHeight || 1;
-      const wide = W >= WIDE_BREAKPOINT;
+      const wide = isWideViewport(W, H);
       /* 纯计算在 model/panelCamera.js；DOM 实测 / 缓存值从这里注入 */
       return stageMetricsOf({
         W, H,
@@ -969,7 +969,7 @@ export default {
        唯一特例：index 窄屏强制隐藏标签（顶栏标签开关在窄屏也隐藏），于是自然落到
        「点设备 = 直接执行动作」；宽屏按本机 showLabels 偏好决定，关掉标签同样是执行。 */
     applyStageMode() {
-      const narrow = window.innerWidth < WIDE_BREAKPOINT;
+      const narrow = !isWideViewport(window.innerWidth, window.innerHeight);
       this._stageNarrow = narrow;
       const labels = !narrow && this.showLabels;
       syncSceneMode(View3D, labels, (hit) => this.onPick3D(hit));
@@ -988,7 +988,7 @@ export default {
       if (typeof View3D === 'undefined' || !View3D.resize) return;
       this._visH = null;                   // 窗口尺寸变了：缓存的显示区域高度作废
       View3D.resize();
-      const narrow = window.innerWidth < WIDE_BREAKPOINT;
+      const narrow = !isWideViewport(window.innerWidth, window.innerHeight);
       this.syncStageBandForViewport();
       if (narrow !== this._narrow) {      // 窄/宽互换：按新可视区重新取景（带动画），并切展示/可点模式
         this._narrow = narrow;
@@ -1098,7 +1098,11 @@ export default {
 .p-shell.p-touch-js { touch-action: none; }
 
 /* ---------- 窄屏：内容区坐一张白纸，纸上沿向 3D 羽化 ---------- */
-@media (max-width: 1023px) {
+/* 窄屏 = 宽屏判据的逻辑非，必须与上面的宽屏 media query 严格互斥，否则
+   768~1023 的横屏窗口会两套同时命中：窄屏 ::after 的 left:0/right:0 会漏进宽屏，
+   把右侧羽化面板拉成左侧一整块黑纱。三行逗号 = OR：
+   W<768；或 W<1024 且 H<450；或 W<1024 且宽高比<1.3（13/10）。 */
+@media (max-width: 767px), (max-width: 1023px) and (max-height: 449px), (max-width: 1023px) and (max-aspect-ratio: 1299/1000) {
   /* 纵向手势由 JS 完整接管（压缩 3D 带 → 卡片内滚），否则浏览器原生滚动会在
      「压到最小高度后继续滚卡片」这一步抢走手势；横向滚动也在 JS 里手动分发。 */
   .p-shell { touch-action: none; }
@@ -1115,7 +1119,7 @@ export default {
 }
 
 /* ---------- 宽屏：3D 铺满 / 右竖栏玻璃面板（上右下贴边，不留页边距） ---------- */
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .p-shell {
     gap: 14px; padding: 0;
     grid-template-columns: minmax(0, 1fr) 340px;

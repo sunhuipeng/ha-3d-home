@@ -4,7 +4,8 @@
 <head>
   <meta charset="utf-8">
   <!-- 展示页：固定挂载 PanelApp，PC / 手机 / 平板 / 空壳 App 同一套页面，
-       由组件自身按窗口宽度（1024px 断点）切换窄屏单列与宽屏左右分栏。
+       由组件自身按版面判据（isWideViewport：≥1024px，或横屏大屏宽≥768 高≥450 宽高比≥1.3）
+       切换窄屏单列与宽屏左右分栏。
        viewport-fit=cover 对 PC 无副作用。 -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <!-- 拒绝手机浏览器的「网页自动深色/强制反色」：本页只支持浅色。

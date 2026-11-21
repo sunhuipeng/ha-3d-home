@@ -78,7 +78,7 @@ export default {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 16px; pointer-events: none;
 }
-@media (max-width: 1023px) {
+@media (max-width: 767px), (max-width: 1023px) and (max-height: 449px), (max-width: 1023px) and (max-aspect-ratio: 1299/1000) {
   .p-stage-loading {
     bottom: auto;
     height: calc(var(--p-band, .38) * 100dvh);   /* 只占顶部 3D 带 */

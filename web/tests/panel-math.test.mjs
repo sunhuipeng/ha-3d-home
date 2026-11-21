@@ -16,7 +16,8 @@ import {
 } from '../src/model/panelCamera.js';
 import {
   STAGE_BAND_INIT, STAGE_MIN_RATIO, STAGE_MIN_PX, STAGE_MAX_PX,
-  WIDE_BREAKPOINT, RIGHT_PANEL_W, RIGHT_PANEL_GAP, CONTENT_MIN_W,
+  WIDE_BREAKPOINT, WIDE_MIN_W, WIDE_MIN_H, WIDE_MIN_ASPECT, isWideViewport,
+  RIGHT_PANEL_W, RIGHT_PANEL_GAP, CONTENT_MIN_W,
   FLING_WINDOW_MS, FLING_IDLE_MS, FLING_MIN_V, FLING_MAX_V, FLING_DECAY,
 } from '../src/model/stageLayout.js';
 
@@ -34,6 +35,34 @@ test('sceneIcon：关键词按顺序命中，未知名兜底 🎬', () => {
   assert.equal(sceneIcon(null), '🎬');
   assert.equal(sceneIcon(undefined), '🎬');
   assert.equal(SCENE_ICONS.length, 12);
+});
+
+test('isWideViewport：三段式判据（原宽度兜底 + 横屏大屏，零回归）', () => {
+  /* ① 原逻辑：≥1024 无条件宽屏，无论比例（分屏方窗也算），保证历史行为不变 */
+  assert.equal(isWideViewport(1024, 1200), true,  '≥1024 即使偏高仍宽屏');
+  assert.equal(isWideViewport(1920, 1080), true,  '1080p 桌面');
+  assert.equal(isWideViewport(1024, 400), true,   '正好等于断点');
+  assert.equal(isWideViewport(1023, 900), false,  '差 1px 到断点、比例不够 → 窄屏');
+
+  /* ② 横屏兜底：物理横屏大屏被缩放压到 1024 CSS px 以下 → 宽屏 */
+  assert.equal(isWideViewport(960, 540), true,   '投影仪缩放 200%：960×540 横屏');
+  assert.equal(isWideViewport(1280, 720), true,  '720p 横屏');
+  assert.equal(isWideViewport(800, 600), true,   '4:3 横屏（比例 1.33 ≥ 1.3）');
+  assert.equal(isWideViewport(768, 450), true,   '三项下限都在边界上');
+  assert.equal(isWideViewport(768, 449), false,  '高度差 1px 到下限 → 窄屏');
+
+  /* ③ 窄屏：竖屏 / 横屏手机 / 小窗口 */
+  assert.equal(isWideViewport(412, 915), false,  '手机竖屏');
+  assert.equal(isWideViewport(768, 1024), false, '平板竖屏');
+  assert.equal(isWideViewport(915, 412), false,  '横屏手机：短边 < 400 被拦');
+  assert.equal(isWideViewport(767, 500), false,  '小窗：宽度 < 768');
+  assert.equal(isWideViewport(500, 300), false,  '小窗：宽高都不够');
+
+  /* 边界常数自检：CSS media query（13/10）与 JS 阈值必须一致 */
+  assert.equal(WIDE_MIN_ASPECT, 1.3);
+  assert.equal(13 / 10, WIDE_MIN_ASPECT);
+  assert.ok(RIGHT_PANEL_W + RIGHT_PANEL_GAP + CONTENT_MIN_W <= WIDE_MIN_W,
+    '横屏兜底宽度下限必须放得下宽屏骨架（右栏+间隙+左列最小）');
 });
 
 test('stageBounds：与原 _stageEnsure 的 min/max 公式一致', () => {

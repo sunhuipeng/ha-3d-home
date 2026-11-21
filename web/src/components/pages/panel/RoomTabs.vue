@@ -65,7 +65,7 @@ export default {
   background: var(--badge-bg); color: #fff; font-size: 10px; font-weight: 700; line-height: 1;
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .p-room-track { padding: 2px 14px 2px 2px; }
 }
 </style>

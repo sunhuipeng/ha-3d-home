@@ -25,7 +25,7 @@ import { defineStore } from 'pinia';
 /* 带 .js 后缀：Vite 与 Node 原生 ESM 都能解析，store 可被 node --test 直接加载。
    jsGesture 的纯口径抽在 model/panelGesture.js 的 jsGestureOf()，四组合有单测；
    这里 getter 直接复用它，避免 store 与测试各写一份布尔式。 */
-import { WIDE_BREAKPOINT } from '../model/stageLayout.js';
+import { isWideViewport } from '../model/stageLayout.js';
 import { jsGestureOf } from '../model/panelGesture.js';
 
 /* toast 的淡出定时器属于实现细节，不需要响应式，也不该进 $state 被序列化。
@@ -50,10 +50,12 @@ export const useUiStore = defineStore('ui', {
     tooltipStyle: {},
 
     /* ---- 版面模式（跨组件唯一真相） ----
-     * 与 CSS @media (min-width:1024px) 和 PanelApp 取景共用 WIDE_BREAKPOINT。
+     * 与 CSS 的组合 media query 和 PanelApp 取景共用 isWideViewport。
+     * 判据是三段式：≥1024 直接宽屏（原行为）；否则横屏且够大（CSS 宽≥768、高≥450、
+     * 宽高比≥1.3）也算宽屏——专治「物理横屏大屏被缩放压到 1024 CSS px 以下」的误判。
      * 初值必须同步算出来：不能默认 false 等 mounted 再修，否则首帧会按
      * 「宽屏直接点」渲染卡片控件，再闪成滑动态。SSR 无 window 时按宽屏处理。 */
-    viewportWide: typeof window === 'undefined' ? true : window.innerWidth >= WIDE_BREAKPOINT,
+    viewportWide: typeof window === 'undefined' ? true : isWideViewport(window.innerWidth, window.innerHeight),
 
     /* ---- 运行载体：app 壳 / 浏览器（与宽窄正交，两个维度别混） ----
      * 只认原生桥是否存在：壳内 WebView 在页面脚本执行前注入 window.AppShell，
@@ -76,7 +78,7 @@ export const useUiStore = defineStore('ui', {
     /* 只由 bridge.js 的 matchMedia change 事件调用；写同值 Pinia 不触发重渲染 */
     syncViewport() {
       if (typeof window === 'undefined') return;
-      this.viewportWide = window.innerWidth >= WIDE_BREAKPOINT;
+      this.viewportWide = isWideViewport(window.innerWidth, window.innerHeight);
     },
 
     /* key 用语义名：'furn' / 'dev' / 'conn' / 'import' / 'disp' / 'bg' / 'backdrop' / 'reset'。

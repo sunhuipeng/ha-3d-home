@@ -161,16 +161,16 @@ button.ph-ico.act:focus-visible { outline: 2px solid var(--blue); outline-offset
 .p-dcard .v { font-size: 20px; font-weight: 700; color: var(--ink); line-height: 1.25; }
 .p-dcard .v small { font-size: 12px; font-weight: 400; opacity: .6; }
 /* 宽屏下天气大一号（顶栏有 14px 内边距，放得下） */
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .pw-temp { font-size: 22px; }
   .p-wx { gap: 8px; }
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 767px), (max-width: 1023px) and (max-height: 449px), (max-width: 1023px) and (max-aspect-ratio: 1299/1000) {
   /* 窄屏不显示设备标签，也就没有标签开关：按统一口径，点设备模型直接执行动作 */
   .ph-tools .ph-labels { display: none; }
 }
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   /* 宽屏顶栏回到网格左上角（不再浮在 3D 上） */
   .p-head { grid-area: head; position: relative; left: auto; right: auto; top: auto;
     padding: calc(var(--safe-top, env(safe-area-inset-top, 0px)) + 14px) 0 0 14px; }

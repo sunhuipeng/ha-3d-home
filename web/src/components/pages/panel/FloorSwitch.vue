@@ -40,7 +40,7 @@ export default {
 .p-floors button:hover { background: var(--glass-hover); color: var(--ink); }
 .p-floors button.on { background: var(--card-tile); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(20, 30, 50, .12); }
 
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .p-floors { left: 16px; bottom: 16px; }
 }
 </style>

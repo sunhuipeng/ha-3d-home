@@ -802,7 +802,7 @@ PluginEngine.register({
 >
 > ⚠ 与 `lock` 的区别：`lock` 是**渲染但禁用**（灰着让你看到）、`is_on` 是**直接不渲染**（整个控件消失）。因此**别把一张卡的所有控件都标 `is_on`**，否则设备关着时整张卡只剩一个空标题行 —— 至少留一个常显控件（或电源开关本身，它不在 `cards()` 里）。也不适合标在开机入口上（关机时它自己也隐藏，就没人能开机了）。
 
-> **版面模式（宽屏 / 窄屏）**：唯一真相是 Pinia `ui` store 的 `viewportWide`（`web/src/stores/ui.js`），按 `model/stageLayout.js` 的 `WIDE_BREAKPOINT = 1024` 判定，与 CSS `@media` 同源。由 `bridge.js` 的 `installViewportWatcher()` 用 `matchMedia` 统一监听（两个入口自动覆盖，跨断点只触发一次），**控件不要各自加 resize 监听**，也不要自己读 `window.innerWidth` 另算一份 —— 否则跨断点那一帧会出现「页面已放行手势但组件还在点选态」的错位。`PanelApp` 的 `wide`（HUD / 取景 / 手势开关）也是从它映射出来的，不再自持 data。`CardRange` 与 `CardChoice` 都按它分流，**插件侧不需要写任何新字段**（`KEEP` 字段池不变）。
+> **版面模式（宽屏 / 窄屏）**：唯一真相是 Pinia `ui` store 的 `viewportWide`（`web/src/stores/ui.js`），按 `model/stageLayout.js` 的 `isWideViewport(W, H)` 三段式判定（CSS 宽≥1024 直接宽屏；否则宽≥768 且高≥450 且宽高比≥1.3 的横屏大屏也算宽屏——专治物理横屏大屏被缩放压到 1024 CSS px 以下的误判），与 CSS `@media` 同源。由 `bridge.js` 的 `installViewportWatcher()` 用 `matchMedia` 统一监听（两个入口自动覆盖，跨断点只触发一次），**控件不要各自加 resize 监听**，也不要自己读 `window.innerWidth` 另算一份 —— 否则跨断点那一帧会出现「页面已放行手势但组件还在点选态」的错位。`PanelApp` 的 `wide`（HUD / 取景 / 手势开关）也是从它映射出来的，不再自持 data。`CardRange` 与 `CardChoice` 都按它分流，**插件侧不需要写任何新字段**（`KEEP` 字段池不变）。
 
 > **`range` 的拖动与提交**：`CardRange` 是**自绘滑块**（`div[role="slider"]` + 轨道 / 填充 / 椭圆把手，不用 `<input type="range">`）—— 原生控件的「点轨道即跳值」是浏览器内置行为，`preventDefault` 跨浏览器不稳且 UA 内部 value 会与 Vue 绑定脱钩。交互规则：
 > - **窄屏（手机）**：只有按在把手上（中心 ±20px）才启动拖动；按轨道其它位置完全不响应、不改值，手指滑动照常交给页面手势 —— 防误触的关键；
@@ -978,7 +978,7 @@ cards() {
 
 - 两个开关由 `applySceneMode()` **一次拨完**（`setLabelsVisible` + `onPick`）：页面只决定「标签该不该显示」，不要再单独决定点选行为，否则会出现「标签显示却点设备执行」「标签隐藏却点设备出卡、没有执行入口」的错位。
 - 🃏「卡片」开关只管卡片面板 / 预览浮层的显隐（`PREF_KEYS.displayCards` / `editorCards`），**不再影响点击行为**；关着时点设备仍会更新选中态，再打开就能看到。
-- 唯一特例：展示页窄屏（< 1024px，含 HA App 的 WebView）强制不显示标签，于是按上表自然落到「点设备 = 执行」；顶栏的标签开关在窄屏也隐藏。
+- 唯一特例：展示页窄屏（未命中 `isWideViewport`，含 HA App 的 WebView）强制不显示标签，于是按上表自然落到「点设备 = 执行」；顶栏的标签开关在窄屏也隐藏。
 - 标签能否点、点下去发什么服务，仍由插件 `click` 规格与实例属性面板的「启用点击」决定（见 2.3），与页面模式无关。
 - **点"设备周围的光 / 蒸汽"也会开关？** 那是纯视觉 / 动效几何没打标——射线把它们当成设备本体了。贴着本体的光晕 / 光锥 / 发光面 / 呼吸动效打 `userData.noPick = true`（作废该命中、继续找本体）；飘离本体的蒸汽 / 热浪 / 上飘粒子打 `userData.pickBlock = true`（命中即整条射线作废，否则跳过会命中下方本体照样开关）。`lightKit` 生成的引擎已自动打 `noPick`，详见 1.2「纯视觉 / 纯动效几何：`userData.noPick` / `userData.pickBlock`」。
 

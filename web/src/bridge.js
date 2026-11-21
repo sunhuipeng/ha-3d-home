@@ -21,16 +21,18 @@
 import { useEditorStore } from './stores/editor';
 import { useUiStore } from './stores/ui';
 import { useHaStore } from './stores/ha';
-import { WIDE_BREAKPOINT } from './model/stageLayout';
+import { WIDE_MEDIA_QUERY } from './model/stageLayout';
 
 /* 版面模式监听：跟着 installAppBridge 一起装，两个入口（main-index.js 的
  * PanelApp、main-edit.js 的 EditApp）自动覆盖，不用改入口文件。
- * 用 matchMedia 而不是 resize —— 只在真正跨过 1024px 断点时触发一次，
- * 拖宽/拖窄不逐像素重算，且与 CSS @media 的语义完全一致。 */
+ * 用 matchMedia 而不是 resize —— 只在真正跨越宽窄断点时触发一次，
+ * 拖宽/拖窄不逐像素重算，且与 CSS @media 的语义完全一致。
+ * media query 文本由 stageLayout 的 WIDE_MEDIA_QUERY 统一给出（与 isWideViewport
+ * 三段式等价）：≥1024，或横屏且够大（≥768×450 且宽高比≥1.3）。 */
 function installViewportWatcher(pinia) {
   if (typeof window === 'undefined' || !window.matchMedia) return;
   const ui = useUiStore(pinia);
-  const mq = window.matchMedia('(min-width: ' + WIDE_BREAKPOINT + 'px)');
+  const mq = window.matchMedia(WIDE_MEDIA_QUERY);
   const sync = () => ui.syncViewport();
   sync();   // 兜首帧：state 初值已同步算过，这里再处理 UA 缩放 / 初始化时序
   if (mq.addEventListener) mq.addEventListener('change', sync);

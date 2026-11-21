@@ -100,7 +100,7 @@ export default {
   box-shadow: 0 0 0 2px var(--glass), 0 0 6px var(--scene-dot-glow);
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   /* 宽屏同样单行横滚：项目多时不再换行撑高右栏、挤掉 3D 取景高度 */
   .p-scenes { padding: 14px 14px 0 0; gap: 8px; }
   .p-scene { width: 92px; height: 60px; }

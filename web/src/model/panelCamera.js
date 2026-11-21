@@ -9,7 +9,7 @@
  * 公式从原 methods 逐字搬来，取景参数经过多轮实测定稿，未改任何口径。
  */
 import {
-  WIDE_BREAKPOINT, RIGHT_PANEL_W, RIGHT_PANEL_GAP, CONTENT_MIN_W,
+  isWideViewport, RIGHT_PANEL_W, RIGHT_PANEL_GAP, CONTENT_MIN_W,
   STAGE_BAND_INIT, STAGE_MIN_RATIO,
 } from './stageLayout.js';
 
@@ -29,7 +29,7 @@ export function squeezeOf(band, minBand, wide) {
  *   defaultDist 默认机位距离（DEFAULT_CAM.dist）
  */
 export function stageMetricsOf({ W, H, stageFrac, stageMin, visibleH, defaultDist }) {
-  const wide = W >= WIDE_BREAKPOINT;
+  const wide = isWideViewport(W, H);
   const contentW = wide ? Math.max(CONTENT_MIN_W, W - RIGHT_PANEL_W - RIGHT_PANEL_GAP) : W;
   const contentH = visibleH;
   const minH = stageMin || Math.round(H * STAGE_MIN_RATIO);
