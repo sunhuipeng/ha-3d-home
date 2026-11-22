@@ -38,24 +38,69 @@
 
     <!-- 实时数据卡：仅宽屏，挂在顶栏正下方（top:100% 跟随顶栏实际高度，不写死坐标） -->
     <div class="p-hud" id="tv-zone-hud" v-if="wide && hudCards.length">
-      <div class="p-dcard" v-for="c in hudCards" :key="c.eid">
+      <div class="p-dcard" v-for="c in hudCards" :key="c.eid"
+        :class="{ act: activeEid === c.eid }"
+        @mouseenter="onEnter(c.eid)" @mouseleave="onLeave"
+        @click="onCardClick(c.eid)">
         <div class="k">{{ c.name }}</div>
         <div class="v">{{ c.value }}<small> {{ c.unit }}</small></div>
+        <!-- 历史曲线悬浮卡：PC 鼠标移入 / 移动端点击卡片时显示，贴卡片右侧下方 -->
+        <div class="p-dcard-hist" v-if="activeEid === c.eid" @mouseenter="onHistEnter" @mouseleave="onLeave">
+          <history-chart :title="c.name" :unit="c.unit" :mode="mode" :points="points"
+            :levels="levels" :loading="loading" :error="error" />
+        </div>
       </div>
     </div>
   </header>
 </template>
 
 <script>
-/* 无状态：顶栏只按 props 显示 HUD / 视图开关，所有动作 emit 回 PanelApp。
+/* 顶栏按 props 显示 HUD / 视图开关，动作 emit 回 PanelApp。
+   数据卡的历史曲线是组件内局部交互态（hover/点击 + 取数），由 useCardHistory 管，
+   不污染 props —— 曲线不属于「顶栏显示内容」，点击也不改变父页状态。
    整块在 .p-shell(touch-action:none) 内，按钮统一走 v-tap，避免顶栏横滑误触。 */
 import { vTap } from '../../../composables/useTap.js';
 import NightToggle from '../../common/NightToggle.vue';
+import HistoryChart from '../../common/HistoryChart.vue';
+import { useCardHistory } from '../../../composables/useCardHistory.js';
+
+/* 只有真正支持悬停的设备（鼠标 / 触控板）才走 mouseenter；触摸设备走点击。
+   matchMedia('(hover: hover)') 比 inApp 更准：PC 浏览器、带鼠标的平板都对，
+   纯触屏（手机 / 投影 App）为 false。 */
+const canHover = () => typeof window !== 'undefined' && window.matchMedia
+  && window.matchMedia('(hover: hover)').matches;
 
 export default {
   name: 'PanelHeader',
-  components: { NightToggle },
+  components: { NightToggle, HistoryChart },
   directives: { tap: vTap },
+  setup() {
+    const hist = useCardHistory();
+    let leaveTimer = null;
+    const cancelLeave = () => { if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; } };
+
+    function onEnter(eid) {
+      if (!canHover()) return;              // 触摸设备不响应 hover（交给 click）
+      cancelLeave();
+      hist.show(eid);
+    }
+    function onHistEnter() { cancelLeave(); }  // 鼠标从卡片移到悬浮卡上：别关
+    function onLeave() {
+      if (!canHover()) return;
+      cancelLeave();
+      leaveTimer = setTimeout(() => hist.clear(), 180);  // 小延迟：允许移到悬浮卡上
+    }
+    function onCardClick(eid) {
+      if (canHover()) return;               // PC 上点击不干预 hover 流程
+      if (hist.activeEid.value === eid) hist.clear();
+      else hist.show(eid);
+    }
+    return {
+      activeEid: hist.activeEid, mode: hist.mode, points: hist.points,
+      levels: hist.levels, loading: hist.loading, error: hist.error,
+      onEnter, onHistEnter, onLeave, onCardClick,
+    };
+  },
   props: {
     name: { type: String, default: '家' },
     wide: { type: Boolean, default: false },
@@ -152,14 +197,27 @@ button.ph-ico.act:focus-visible { outline: 2px solid var(--blue); outline-offset
   max-width: 220px; pointer-events: none;
 }
 .p-dcard {
+  position: relative;   /* 悬浮卡以本卡为定位锚点 */
   padding: 9px 14px; border-radius: 14px; min-width: 130px;
+  /* 父 .p-hud 是 pointer-events:none（不挡 3D 点击），数据卡自身恢复可交互 */
+  pointer-events: auto;
   background: var(--glass);
   backdrop-filter: blur(16px) saturate(1.05); -webkit-backdrop-filter: blur(16px) saturate(1.05);
   box-shadow: 0 8px 22px rgba(20, 30, 50, .10);
 }
+.p-dcard.act { box-shadow: 0 8px 26px rgba(20, 30, 50, .18); }
 .p-dcard .k { font-size: 12px; color: var(--ink2); }
 .p-dcard .v { font-size: 20px; font-weight: 700; color: var(--ink); line-height: 1.25; }
 .p-dcard .v small { font-size: 12px; font-weight: 400; opacity: .6; }
+/* 历史曲线悬浮卡：贴在卡片右侧、垂直居中偏上；z 高于顶栏与 3D。
+   @media (hover:hover) 里鼠标能移过去，触摸设备点卡片弹出后点别处（由 click toggle）关闭。 */
+.p-dcard-hist {
+  position: absolute; left: calc(100% + 10px); top: -6px; z-index: 30;
+  pointer-events: auto;
+  animation: hc-pop .14s ease-out;
+}
+@keyframes hc-pop { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .p-dcard-hist { animation: none; } }
 /* 宽屏下天气大一号（顶栏有 14px 内边距，放得下） */
 @media (min-width: 1024px), (min-width: 768px) and (min-height: 450px) and (min-aspect-ratio: 13/10) {
   .pw-temp { font-size: 22px; }

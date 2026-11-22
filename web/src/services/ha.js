@@ -332,6 +332,34 @@ export const HA = {
     });
   },
 
+  /* ---------------- 历史数据（数据卡 hover 曲线） ----------------
+   * 走现有 WS 的 history/history_during_period：服务端代理已透传任意指令且代办 HA auth，
+   * 前端无需 token、服务端无需新路由。返回 HA 原始 { "<eid>": [{s,t},...] }（解析交给
+   * model/historySeries.js），失败时 reject，调用方显示错误态。
+   * 缓存 5 分钟：hover 反复进出不重复打 HA 的 recorder（重查询），
+   * 缓存只放内存（不写 storage），刷新页面即失效。演示模式没有 recorder，直接返回空。 */
+  _histCache: {},
+
+  async historyOf(eid, hours) {
+    if (!eid) return [];
+    const h = Number(hours) > 0 ? Number(hours) : 24;
+    const key = eid + '|' + h;
+    const cached = this._histCache[key];
+    if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.data;
+    if (this.demo || !this.connected) throw new Error('HA 未连接');
+    const start = new Date(Date.now() - h * 3600 * 1000).toISOString();
+    /* HA 现行命令（history 集成）：history/history_during_period + entity_ids 数组。
+       老命令 history/period 已移除，发了会报 unknown_command。
+       返回 result 是 { "<eid>": [{s,t},...] } 字典；解析在 historySeries.parseHistory。 */
+    const r = await this.send({
+      type: 'history/history_during_period', entity_ids: [eid],
+      start_time: start, minimal_response: true, no_attributes: true,
+    });
+    const data = (r && r.result) || {};
+    this._histCache[key] = { at: Date.now(), data };
+    return data;
+  },
+
   /* 调用服务。data = 服务数据（entity_id 自动拆到 target，其余进 service_data）。
    * HA websocket 的 call_service 要求 target（实体定位：entity_id/device_id/area_id）
    * 与 service_data（服务参数，如 brightness_pct/temperature）分开传 —— 混在 target 里

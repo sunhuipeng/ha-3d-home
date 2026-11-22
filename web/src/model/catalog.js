@@ -639,8 +639,10 @@ export function serializeProject(p) {
     };
   };
 
-  /* 房间：只有几何 + 名字（可选颜色）。面积/中心是派生值，不进存档；
-   * 少于 3 点的残片直接丢弃，保证落盘的每个房间都可渲染、可拾取。 */
+  /* 房间：几何 + 名字（可选颜色）+ 可选的温湿度实体绑定。面积/中心是派生值，不进存档；
+   * 少于 3 点的残片直接丢弃，保证落盘的每个房间都可渲染、可拾取。
+   * tempEntity/humidityEntity 是 HA 实体 id（房间 3D 标签的读数来源，与设备绑定无关），
+   * 走 S() 归一化：未绑定 / 非字符串一律不落盘，旧存档没有这两个字段也正常。 */
   const roomOut = (r) => {
     const pts = (Array.isArray(r && r.pts) ? r.pts : [])
       .filter((p) => Array.isArray(p) && isFinite(p[0]) && isFinite(p[1]))
@@ -648,6 +650,8 @@ export function serializeProject(p) {
     if (pts.length < 3) return null;
     const o = { id: S(r.id), name: S(r.name) || '房间', pts };
     if (S(r.color)) o.color = S(r.color);
+    if (S(r.tempEntity)) o.tempEntity = S(r.tempEntity);
+    if (S(r.humidityEntity)) o.humidityEntity = S(r.humidityEntity);
     return o;
   };
 

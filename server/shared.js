@@ -193,6 +193,12 @@ const ELEM_CHECKS = {
     if (!sOf(r.id) || pts.length < 3) return null;
     r.pts = pts;
     r.name = sOf(r.name) || '房间';
+    /* 房间 3D 温湿度标签的实体绑定（可选）。与前端 roomOut 同口径：只留字符串，
+     * 非字符串/空串删除，避免异常类型落盘。语义上与设备绑定无关。 */
+    ['tempEntity', 'humidityEntity'].forEach((k) => {
+      const v = sOf(r[k]);
+      if (v) r[k] = v; else delete r[k];
+    });
     return r;
   },
 };
@@ -251,10 +257,21 @@ function normProject(p) {
   return p;
 }
 
-function loadProject() { return readJSON(PROJECT_FILE, null); }
+/* 项目数据运行时只通过 saveProject()（POST/PUT /api/project）变化，单进程内缓存一份即可：
+ * 首次 loadProject() 读盘，之后直接返回缓存；保存成功后再同步刷新。
+ * 外部直接改 data/project.json 不会被感知，需重启服务（与 config/installKey 同一口径）。
+ * undefined = 尚未加载；null = 文件不存在/损坏（与 readJSON 的 fallback 一致）。
+ * 返回的是缓存对象本身，调用方只读、不要就地修改。 */
+let projectCache;
+
+function loadProject() {
+  if (projectCache === undefined) projectCache = readJSON(PROJECT_FILE, null);
+  return projectCache;
+}
 
 function saveProject(proj) {
   writeJSON(PROJECT_FILE, proj);
+  projectCache = proj;
   return { saved: true, time: Date.now() };
 }
 

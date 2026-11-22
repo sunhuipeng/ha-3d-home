@@ -9,7 +9,8 @@ import { Evaluator, Brush, ADDITION, SUBTRACTION } from 'three-bvh-csg';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { HA } from '../services/ha.js';
-import { furnSpec, deviceDefaultZ, devTypeOf, DEFAULT_FLOOR_H } from '../model/catalog.js';
+import { furnSpec, deviceDefaultZ, devTypeOf, DEFAULT_FLOOR_H, roomCentroid } from '../model/catalog.js';
+import { roomClimate, roomHasClimate } from '../model/roomClimate.js';
 import { deviceFromHits } from '../model/pick.js';
 import { PluginEngine, DEFAULT_OPENING_W } from './plugins.js';
 import { applyLegacyRenderer } from './three-legacy.js';
@@ -1596,6 +1597,28 @@ export const View3D = {
     (fl.devices || []).forEach((d) => addLabel(d, devTypeOf(d)));
     (fl.doors || []).forEach((o) => addLabel(o, 'door'));
     (fl.windows || []).forEach((o) => addLabel(o, 'window'));
+
+    /* 房间温湿度标签（独立一套，不是设备标签）：
+     *   - 只有绑了 tempEntity / humidityEntity 至少一个的房间才建；
+     *   - 位置 = 房间重心（roomCentroid）上方固定高度，落点和房间名标签一致；
+     *   - 纯展示：不挂 click、不进 pickGroups、不做 isOn 高亮（温湿度没有开关语义）；
+     *   - 与设备标签共用 this.labels 数组 + fragment 缓存，随楼层 stash/restore 一起走。
+     * 用独立的 L.kind='room' 标记，updateLabels 据此分流文案与定位。 */
+    ((fl.rooms) || []).forEach((r) => {
+      if (!roomHasClimate(r)) return;
+      const el = document.createElement('div');
+      el.className = 'room3d-climate';
+      el.innerHTML = '<span class="rn"></span><span class="rv"></span>';
+      wrap.appendChild(el);
+      const c = roomCentroid(r && r.pts);
+      this.labels.push({
+        el, d: r, kind: 'room',
+        cx: c[0], cy: c[1],
+        rn: el.querySelector('.rn'),
+        rv: el.querySelector('.rv'),
+      });
+    });
+
     this._labelWait = performance.now();   // 本轮标签等待 HA 的起点（超 3s 降级显示，见 updateLabels）
     this.updateLabels();
   },
@@ -1614,6 +1637,24 @@ export const View3D = {
     const v = this._labelV || (this._labelV = new THREE.Vector3());   // 每帧复用，避免逐标签 new
     this.labels.forEach((L) => {
       const { el, d } = L;
+
+      /* 房间温湿度标签：重心定位 + 读数文案，纯展示（不可点、无 on 高亮）。
+       * 与设备标签共用 labels 数组，但定位/文案完全不同，所以在设备分支前先分流。 */
+      if (L.kind === 'room') {
+        /* 高度取房间地面上方 0.55m：够避开地面与家具，又不至于飘到墙顶。
+         * 同样补 houseY 基准（与设备标签一致，房屋抬升后标签跟着走）。 */
+        v.set(L.cx, (this.houseY || 0) + 0.55, L.cy).project(this.camera);
+        if (v.z > 1) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        el.style.left = ((v.x + 1) / 2 * w) + 'px';
+        el.style.top = ((-v.y + 1) / 2 * h) + 'px';
+        const info = roomClimate(d, (eid) => HA.getState(eid));
+        L.rn.textContent = info.name;
+        L.rv.textContent = info.value;
+        el.classList.toggle('has-data', !!info.value);
+        return;   // 房间标签到此为止，绝不进设备的高亮 / 点击分支
+      }
+
       /* 标签锚点: 设备 = 锚点上方；门/窗 = 贴墙模型中部（插件 def.labelBaseY 声明，
        * door 1.05 / window 1.45；未声明回退 devY）。抬升量：实例覆盖（属性面板「标签高度」）
        * > 造型声明的 labelOffset > 插件 def.labelOffset > 引擎缺省 0.3；实例值每帧现读 */

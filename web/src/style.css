@@ -458,6 +458,18 @@ input[type="range"] { flex: 1; accent-color: var(--blue); }
 .dev3d-label.on { background: rgba(245, 158, 11, .92); }
 .dev3d-label.clickable:hover { background: rgba(59, 130, 246, .95); }
 
+/* 房间温湿度标签：环境读数、纯展示，和设备标签刻意区分（青绿调、无手型、点击穿透到房间地面）。
+ * 两行：房间名（小字）+ 读数（大字）；没取到读数时只显示房间名并降透明度。 */
+.room3d-climate {
+  position: absolute; transform: translate(-50%, -100%); pointer-events: none;
+  background: rgba(13, 110, 110, .82); color: #fff; padding: 4px 9px; border-radius: 8px;
+  font-size: 11px; white-space: nowrap; z-index: 15; text-align: center; line-height: 1.45;
+}
+.room3d-climate .rn { display: block; opacity: .8; }
+.room3d-climate .rv { display: block; font-weight: 700; }
+.room3d-climate:not(.has-data) { opacity: .6; background: rgba(90, 100, 110, .7); }
+.room3d-climate:not(.has-data) .rv { display: none; }
+
 /* ---------- 弹窗 ---------- */
 .modal {
   position: fixed; inset: 0; background: rgba(10, 16, 30, .45); z-index: 50;

@@ -187,8 +187,15 @@ export const PluginEngine = {
     this.defs.push(def);
   },
 
-  /* ---------------- 加载 assets/plugins 下所有插件 ---------------- */
-  loadAll() {
+  /* ---------------- 加载插件脚本 ----------------
+   * loadAll()                       全量（编辑页用: 样式面板要列所有可选造型）
+   * loadAll(neededIds)              按需（id 的 Set 或数组）
+   * loadAll((list) => idSet)        按需（回调拿清单算 id 集合，清单只拉一次）
+   *   neededIds 元素是插件 id（与 /api/plugins 清单的 id 对齐）。
+   *   传空集 = 一个都不加载（空项目语义，不是错误）。
+   * 按 id 匹配清单项、用清单项自带的 entry 加载 —— 兼容 id≠dir 的自定义包。
+   * 幂等: 同一页面只加载一次（_loading），与原来行为一致。 */
+  loadAll(needed) {
     if (this._loading) return this._loading;
     this._loading = (async () => {
       let list = [];
@@ -196,7 +203,13 @@ export const PluginEngine = {
         const r = await fetch('/api/plugins');
         list = (await r.json()).plugins || [];
       } catch (e) { /* 服务端不支持时无插件 */ }
-      await Promise.all(list.map((p) => new Promise((res) => {
+      /* 按需过滤: 不传参保持全量。回调形式让调用方用同一份清单算 id 集合，不重复 fetch。 */
+      let ids = needed;
+      if (typeof needed === 'function') ids = needed(list);
+      const useList = (ids == null) ? list : list.filter((p) => p && (
+        typeof ids.has === 'function' ? ids.has(p.id) : ids.indexOf(p.id) >= 0
+      ));
+      await Promise.all(useList.map((p) => new Promise((res) => {
         const s = document.createElement('script');
         // 缓存: 用插件自带的 version 作为 ?v= 版本号（服务端对带 ?v= 的资源一律长缓存 immutable）。
         // 未声明 version 时回退 1，但 URL 仍带 ?v=1、同样长缓存一年 ——

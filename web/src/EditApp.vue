@@ -687,15 +687,21 @@ export default {
       this.closeFlyout('dev');
       this.toast('在户型图上点击放置: ' + e.name);
     },
-    /* 房间属性（名称 / 地面颜色）。房间走 commit() 统一收口：重绘 2D（名字与颜色都影响画布）
-     * + 压一条撤销 + 触发保存；3D 模式下顺带 rebuild，让地面分区跟着换色。
-     * 颜色/名字是低频改动，不需要像拖拽那样做 160ms 防抖。 */
+    /* 房间属性（名称 / 地面颜色 / 温湿度实体绑定）。房间走 commit() 统一收口：重绘 2D
+     * + 压一条撤销 + 触发保存；3D 模式下顺带 rebuild，让地面分区/标签跟着刷新。
+     * 这些都是低频改动，不需要像拖拽那样做 160ms 防抖。
+     * 温湿度实体：EntityInput 每次输入都 emit（边打边搜），这里统一去空格 + 限长；
+     * 空串直接删字段，避免存档里留一堆空键。绑定变化要重建 3D 标签（rebuild 会 syncLabels）。 */
     setRoomProp(key, value) {
       const it = this.selItem;
       if (!it || !this.selection || this.selection.kind !== 'room') return;
       if (key === 'name') it.name = String(value == null ? '' : value).slice(0, 20) || '房间';
       else if (key === 'color') it.color = String(value || '');
-      else return;
+      else if (key === 'tempEntity' || key === 'humidityEntity') {
+        const eid = String(value == null ? '' : value).trim().slice(0, 160);
+        if (eid) it[key] = eid;
+        else delete it[key];
+      } else return;
       this.commit();
     },
     delSelected() { Editor.deleteSelection(); },

@@ -13,6 +13,14 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { ASSET_DIR, CUSTOM_DIR, PUBLIC_DIR, DATA_DIR, IS_PROD, log, readJSON, appVersion, normPathname } = require('./shared');
 
+/* ===== 家具目录 / 插件清单的内存快照 =====
+ * /api/catalog、/api/plugins 的数据运行时只通过安装接口变化（installPackage →
+ * installCatalogPackage / installPluginPackage），单进程内缓存到下次安装成功即可。
+ * 外部直接改 assets/ 或 custom/ 下的文件不会被感知，需重启服务（与 project/config 同一口径）。
+ * 家具包只影响 catalog，插件包只影响 plugins，各自精确失效、不连带重扫另一份。 */
+let catalogCache = null;
+let pluginsCache = null;
+
 /* ===== 安装包落盘的公共原子替换 ===== */
 /*
  * 安装包落盘的公共原子替换。
@@ -282,7 +290,7 @@ function listGlb(dir) {
   catch (e) { return []; }
 }
 
-/* 跳过目录时只提示一次（/api/catalog 每次请求都会重扫，重复打印会刷屏） */
+/* 跳过目录时只提示一次（扫描只在缓存未命中时发生，仍保留去重避免刷屏） */
 const warnedDirs = new Set();
 function warnOnce(key, msg) {
   if (warnedDirs.has(key)) return;
@@ -399,6 +407,9 @@ function installCatalogPackage(files, expectedId) {
     fs.writeFileSync(path.join(tmp, 'item.json'), jn.data);
     for (const g of glbEntries.values()) fs.writeFileSync(path.join(tmp, g.base), g.data);
   }, '家具');
+
+  /* 文件已原子替换到位：下次 /api/catalog 必须重建快照，不能返回旧清单 */
+  catalogCache = null;
 
   const baseUrl = '/custom/models/' + encodeURIComponent(pack.id) + '/';
   const items = pack.items.map((it) => toCatalogItem(pack.id, it, baseUrl));
@@ -518,6 +529,7 @@ function safePluginEntryName(name) {
 
 /* ---------- 清单扫描 ---------- */
 function listPlugins() {
+  if (pluginsCache) return pluginsCache;
   const bases = [
     { base: path.join(ASSET_DIR, 'plugins'), url: '/assets/plugins' },
     { base: path.join(CUSTOM_DIR, 'plugins'), url: '/custom/plugins', custom: true },   // 后扫: 同名覆盖
@@ -539,7 +551,8 @@ function listPlugins() {
       }
     } catch (e) { /* 目录不存在 */ }
   }
-  return Array.from(found.values());
+  pluginsCache = Array.from(found.values());
+  return pluginsCache;
 }
 
 /* ---------- 安装 ---------- */
@@ -681,6 +694,9 @@ function installPluginPackage(all, requireId) {
     }
   }, '插件');
 
+  /* 文件已原子替换到位：下次 /api/plugins 必须重建快照 */
+  pluginsCache = null;
+
   log('[ha-3d-home] 插件已' + (upgraded ? '升级' : '安装') + ':', id, version || '(无版本)', '文件', files.size, '个');
   return {
     ok: true, kind: 'plugin', id, version, upgraded,
@@ -793,6 +809,7 @@ function autoItem(id, url) {
   return { id, name: id, w: 0.8, d: 0.8, h: 0.6, color: '#9aa7b8', model: url, auto: true };
 }
 function buildCatalog() {
+  if (catalogCache) return catalogCache;
   const byId = new Map();
   const addItem = (x) => { const id = x.id || x.type; if (id) byId.set(String(id), x); };
 
@@ -842,6 +859,7 @@ function buildCatalog() {
     const t = String(it.type == null ? '' : it.type).trim().toLowerCase();
     it.type = (known.size && known.has(t)) ? t : 'other';
   }
+  catalogCache = items;
   return items;
 }
 

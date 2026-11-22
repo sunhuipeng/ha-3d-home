@@ -39,6 +39,23 @@
     <div class="sp-tip">面积按顶点实时计算（鞋带公式）；颜色同时作用于 2D 分区与 3D 地面</div>
   </div>
 
+  <!-- 房间温湿度：绑定到两个 HA sensor，展示页在该房间中心画一个独立标签（不占设备列表）。
+       与设备标签是两套：设备仍在原地、照常可点；这里只加「房间 · 24℃ 55%」纯展示牌。
+       留空 = 该房间不显示对应读数；两项都空则整个房间标签不出现。 -->
+  <div class="sp-sec"><h4>房间温湿度标签</h4>
+    <div class="sp-row"><label>温度</label>
+      <EntityInput :model-value="selItem.tempEntity || ''" domains="['sensor']"
+                   placeholder="sensor.xxx（℃）"
+                   @update:model-value="$emit('set-room-prop', 'tempEntity', $event)" />
+    </div>
+    <div class="sp-row"><label>湿度</label>
+      <EntityInput :model-value="selItem.humidityEntity || ''" domains="['sensor']"
+                   placeholder="sensor.xxx（%）"
+                   @update:model-value="$emit('set-room-prop', 'humidityEntity', $event)" />
+    </div>
+    <div class="sp-tip">绑定后在展示页房间中心显示读数标签；纯展示、不可点，与温湿度计设备无关</div>
+  </div>
+
   <div class="sp-btns"><button class="sp-btn warn" @click="$emit('del-selected')">删除房间</button></div>
 </template>
 
@@ -46,9 +63,11 @@
 import { mapState } from 'pinia';
 import { useEditorStore } from '../../../stores/editor';
 import { roomArea, roomColor, roomCounts, ROOM_COLORS } from '../../../model/catalog.js';
+import EntityInput from '../../common/EntityInput.vue';
 
 export default {
   name: 'RoomPanel',
+  components: { EntityInput },
   emits: ['set-room-prop', 'del-selected'],
   data() {
     return {

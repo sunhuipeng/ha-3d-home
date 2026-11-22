@@ -24,6 +24,7 @@ import { nextTick, watch } from 'vue';
 import { useCatalogStore } from '../stores/catalog';
 import { useHaStore } from '../stores/ha';
 import { initLighting } from '../engine/lighting.js';
+import { neededPluginIds } from '../model/neededPlugins.js';
 
 /* 默认机位：相对房屋中心的观察方向（大屏与面板同一构图） */
 export const DEFAULT_CAM = { dir: [6, 12, 9], dist: Math.hypot(6, 12, 9) };
@@ -48,7 +49,10 @@ export async function bootStageData({ onProject, afterPlugins, onHaChange } = {}
   const project = (await fetchProject()) || buildDefaultProject();
   if (onProject) await onProject(project);
 
-  await PluginEngine.loadAll();
+  /* 展示页按需加载: 项目已在内存里，用同一份插件清单算出必要 id 集合，
+   * 只挂用到的 <script>（省首屏解析/下载）。回调形式让 loadAll 用自己 fetch 的
+   * 同一份清单，不重复请求。编辑页 EditApp 仍走 loadAll() 全量（样式面板要列全部）。 */
+  await PluginEngine.loadAll((list) => neededPluginIds(project, list));
   if (afterPlugins) await afterPlugins(project);
 
   /* HA：不再请求 /api/config（2026-11-19 起令牌由服务端代理代管，是否已配置
