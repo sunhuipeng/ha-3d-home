@@ -540,6 +540,29 @@ input[type="range"] { flex: 1; accent-color: var(--blue); }
 }
 .imp-key-s { margin-top: 6px; font-size: 12px; color: var(--ink2); }
 .imp-key-s code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+
+/* 导入弹窗 · 清理入口 + 二级弹窗（仅自定义插件/家具包） */
+.imp-cleanup-entry { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.imp-cleanup-entry .tb-btn { width: 100%; }
+.cleanup-modal { z-index: 60; }                 /* 盖在导入弹窗 .modal(z-index:50) 之上 */
+.cleanup-box { width: 560px; max-width: 92vw; }
+.cleanup-hint { font-size: 12px; color: var(--ink2); line-height: 1.6; margin: -4px 0 12px; }
+.cleanup-list { max-height: 56vh; overflow-y: auto; }
+.cleanup-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg); }
+.cleanup-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cleanup-name { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.cleanup-name code { font-size: 12px; color: var(--ink); font-weight: 600; word-break: break-all; }
+.cleanup-kind { font-size: 11px; color: var(--ink2); }
+.cleanup-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+.cleanup-badge.used { background: #eef2f7; color: var(--ink2); }
+.cleanup-badge.free { background: #16a34a1a; color: #16a34a; }
+.tb-btn.danger { color: #dc2626; border-color: #f1c2c2; }
+.cleanup-styles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cleanup-style { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
+.cleanup-style em { font-style: normal; margin-left: 6px; opacity: .7; }
+.cleanup-style.used { background: #eef2f7; color: var(--ink); }
+.cleanup-style.free { color: var(--ink2); }
+.cleanup-empty { font-size: 12px; color: var(--ink2); text-align: center; padding: 24px 0; }
 .conn-info { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 12px; }
 .conn-info .r { display: flex; justify-content: space-between; padding: 5px 0; color: var(--ink2); }
 .conn-info .r b { font-weight: 600; color: var(--ink); }

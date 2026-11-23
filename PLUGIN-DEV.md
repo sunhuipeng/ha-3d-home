@@ -84,6 +84,18 @@ refresh > 0      → 按 Hz 节流调 apply 返回值里的 update(t, api)（时
 5. 给 UI 提供 `defFor()` / `styles()` / `styleOf()` / `clickSpec()` / `instanceClickSpec()` / `isOnOf()` / `labelOf()` / `labelOffset()` / `wantsLabel()`；`cardsOf(type, style, obj)` 同步调用插件的 `cards(ctx)`，把声明交给 `engine/cards.js`。
 6. **图标与造型知识全在插件**：`styles[].icon` 由插件自己给（SVG 字符串或 emoji，不写只有 ⚙️ 兜底），2D 符号走插件的 `plan2d(c, p)`。`view3d.js` 是纯抽象层，不含任何 type 的造型知识：`buildDevice()` 只调 `PluginEngine.spawnDevice()` 再做通用变换与热区（**设备、门、窗共用这一个入口**）；墙体掏洞仍由 `view3d.buildWall()` 按 `floors.doors` / `floors.windows` 的位置算，与插件无关。
 
+### 0.4 卸载自定义插件 / 家具包（编辑页「清理未使用插件」）
+
+编辑页「导入插件/包」弹窗里的**清理未使用的插件 / 家具包**入口，只列举**自定义**项：插件取 `/api/plugins` 清单里 `custom:true` 的项，家具包取 `/api/catalog` 条目里 `custom:true` 的项并按 `pack` 聚合成一行（内置资产随镜像发布，不进清理列表）。
+
+**引用判定**（`web/src/model/pluginCleanup.js`，纯函数）：三份接口返回值 `project` / `catalog.items` / `plugins` + 运行时 `PluginEngine.byId` 的样式定义 → 每项带逐样式 `used` 标记，任一样式被引用则整项 `used=true`、删除按钮禁用。
+
+- 插件引用 = `neededPluginIds(project, plugins)`（与展示页按需加载**同一口径**，避免分叉）：显式 `style`（设备/门窗/背景，含 alias）+ **缺省 style 兜底**（出现过的 type 把该 type 默认插件算作被引用，用户拍板口径）。
+- 样式级细分：显式出现的 `<插件id>:<样式id>` 逐个标 used；缺省兜底命中的插件没有显式样式，则标记其第一个样式（`deviceStyleDef()` 在缺 style 时正是取第一个），保证「整体禁用」与「至少一个 used 样式」自洽。样式清单来自 `PluginEngine.byId[id].styles`（样式声明在 plugin.js 的 `register()` 里，`plugin.json` 没有）。
+- 家具包引用 = `floors[].furniture[].mid` 命中条目 `id`，或实例手改的 `model` 反查命中条目 `model`；一个包里任一模型被引用即整包禁用。
+
+**删除**：`POST /api/uninstall`，body `{ kind:'plugin'|'catalog', dir }`，`dir` 是物理目录名（插件按清单项 `dir`——`id` 可能与目录名不同；家具包按 `pack`）。服务端 `uninstallFrom()` 先过目录名白名单 + `resolve` 校验父目录，只删 `custom/plugins/<dir>` 或 `custom/models/<dir>`，**绝不碰 `assets/`**；成功后清 `pluginsCache` / `catalogCache`（与安装成功清缓存同一套，刚加的内存缓存必须配套失效）。前端不重复判引用——引用真相在 project，服务端只做路径安全。删除成功后 `location.reload()` 清掉前端内存态的 `CATALOG` / `PluginEngine`。
+
 ---
 
 ## 1. 通用部分（两类插件都适用）

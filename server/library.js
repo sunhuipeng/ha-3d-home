@@ -585,6 +585,42 @@ function detectKind(files) {
   return null;
 }
 
+/* ---------- 卸载（清理未使用的自定义插件 / 家具包） ---------- */
+/* 只删 CUSTOM_DIR 下的目录，绝不碰 assets/ 内置资产。
+ * 双重防护：目录名先过 PLUGIN_ID_RE 白名单（排除 ../ 与分隔符），
+ * 再 resolve 校验父目录必须是预期位置，堵住符号链接/编码绕过。
+ * 成功删除后清对应快照 —— 与安装成功清缓存是同一套口径。 */
+function uninstallFrom(parentDir, dir, label, cacheKey) {
+  if (!PLUGIN_ID_RE.test(dir)) {
+    throw Object.assign(new Error(label + '目录名不合法（只允许小写字母/数字/_ . -）: ' + dir), { status: 400 });
+  }
+  const parent = path.resolve(parentDir);
+  const target = path.resolve(parent, dir);
+  if (path.dirname(target) !== parent) {
+    throw Object.assign(new Error('非法路径: ' + dir), { status: 400 });
+  }
+  if (!fs.existsSync(target)) {
+    throw Object.assign(new Error(label + '不存在: ' + dir), { status: 404 });
+  }
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch (e) {
+    throw Object.assign(new Error('删除' + label + '失败: ' + e.message), { status: 500 });
+  }
+  if (cacheKey === 'catalog') catalogCache = null;
+  else if (cacheKey === 'plugins') pluginsCache = null;
+  log('[ha-3d-home] 已卸载' + label + ':', dir);
+  return { ok: true, dir };
+}
+function uninstallPlugin(dir) {
+  return Object.assign(uninstallFrom(path.join(CUSTOM_DIR, 'plugins'), dir, '插件', 'plugins'),
+    { kind: 'plugin' });
+}
+function uninstallCatalog(dir) {
+  return Object.assign(uninstallFrom(path.join(CUSTOM_DIR, 'models'), dir, '家具包', 'catalog'),
+    { kind: 'catalog' });
+}
+
 /* 装一个安装包（插件 / 家具自动分流）。
  * requireId 有值时强制 manifest.id 与它一致（远程安装按 URL 里的 id 定位，只走插件包）；
  * 为 null 时直接采用包内清单的 id（编辑页导入）。
@@ -907,5 +943,5 @@ function serveRefImg(res) {
 module.exports = {
   serveStatic, buildCatalog, saveRefImg, serveRefImg,
   catalogTypeDefs,
-  listPlugins, installPackage, INSTALL_MAX_BYTES, PLUGIN_ID_RE,
+  listPlugins, installPackage, uninstallPlugin, uninstallCatalog, INSTALL_MAX_BYTES, PLUGIN_ID_RE,
 };
