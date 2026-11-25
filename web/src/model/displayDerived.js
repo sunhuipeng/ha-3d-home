@@ -101,7 +101,11 @@ export function displayItemsOf(fl, ha, { iconOfState, iconOfName } = {}) {
   const iconName = iconOfName || (() => '🎬');
   const cfg = (fl && fl.display && fl.display.displayItems) || [];
   return (Array.isArray(cfg) ? cfg : [])
-    .filter((it) => it && typeof it.eid === 'string' && it.eid.indexOf('.') > 0)
+    /* automation 项 eid 是居控中枢短码（无 domain. 前缀），按 kind 单独放行；
+     * 其余仍只接受 HA 实体 id，避免脏配置把任意字符串塞进展示条。 */
+    .filter((it) => it && typeof it.eid === 'string' && (
+      it.kind === 'automation' ? /^[A-Za-z0-9_-]{1,64}$/.test(it.eid) : it.eid.indexOf('.') > 0
+    ))
     .slice(0, MAX_DISPLAY_ITEMS)
     .map((it) => {
       const eid = it.eid;
@@ -109,16 +113,20 @@ export function displayItemsOf(fl, ha, { iconOfState, iconOfName } = {}) {
       const st = byEid.get(eid) || getState(eid) || null;
       const name = it.name || friendly(eid);
       const h = iconState(st);
-      const mdi = (h ? h.mdi : '') || it.icon || domainMdiOf(type);
-      const act = displayActionOf({ eid, type, action: it.action });
+      /* automation 的 icon 是从居控中枢同步过来的 SVG 源码（validIcon 已净化），
+       * 单独走 <img> 渲染；有 SVG 时不再套 mdi / emoji。 */
+      const svg = it.kind === 'automation' && typeof it.svg === 'string' ? it.svg : '';
+      const mdi = svg ? '' : ((h ? h.mdi : '') || it.icon || domainMdiOf(type));
+      const act = displayActionOf({ eid, type, kind: it.kind, action: it.action });
       return {
         eid, name, type,
         kind: it.kind || 'entity',
         icon: !mdi && type === 'script' ? '📜' : iconName(name),
-        mdi,
+        mdi, svg,
         service: act.service,
         action: it.action || '',
         toggle: act.toggle,
+        proxy: act.proxy,
         on: !!(st && st.state === 'on'),
         state: st ? String(st.state) : '',
       };

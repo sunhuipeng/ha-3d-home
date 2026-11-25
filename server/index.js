@@ -26,6 +26,7 @@ const { sendJSON, requestURL } = require('./shared');
 const { serveStatic } = require('./library');
 const auth = require('./auth');
 const haProxy = require('./ha-proxy');
+const automationProxy = require('./automation-proxy');
 const systemRoutes = require('./system');
 const configRoutes = require('./config');
 const assetRoutes = require('./assets');
@@ -67,6 +68,8 @@ function createApp() {
   api.use(assetRoutes());
   api.use(installRoutes());
   api.use(projectRoutes());
+  /* 居控中枢代理：编辑页拉动作与场景候选、展示页触发执行，均经服务端转发 */
+  api.use('/automation', automationProxy.routes());
   app.use('/api', api);
 
   /* 旧站主流程：5 个域都不匹配 → 非 GET/HEAD 回 405，其余交给静态托管 */

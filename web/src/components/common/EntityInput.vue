@@ -1,7 +1,8 @@
 <template>
   <div class="ent-input">
     <input :value="text" :placeholder="placeholder" spellcheck="false"
-           @input="onInput($event)" @focus="onFocus" @blur="onBlur" @keydown.esc="open = false">
+           @input="onInput($event)" @focus="onFocus" @blur="onBlur" @keydown.esc="open = false"
+           @keydown.enter="onEnter">
     <div class="ent-drop" v-if="open && items.length" :style="dropStyle">
       <button type="button" class="ent-opt" v-for="s in items" :key="s.entity_id" @mousedown.prevent="pick(s)">
         <span class="col">
@@ -34,7 +35,7 @@ export default {
     placeholder: { type: String, default: 'sensor.xxx' },
     domains: { type: Array, default: null },   // 可选: 只搜这些域（如 ['binary_sensor']）
   },
-  emits: ['update:modelValue'],
+  emits: ['update:modelValue', 'enter'],
   data() {
     return { text: this.modelValue || '', open: false, items: [], dropStyle: null };
   },
@@ -96,6 +97,15 @@ export default {
       this.search();
       this.open = true;
       this.place();
+    },
+    /* 回车：收起下拉、同步最终值并抛 enter 给父级（如展示项配置里回车即添加）。
+     * 输入法组合中的 Enter 是确认候选词，不能当成提交（isComposing 为真时忽略）。 */
+    onEnter(e) {
+      if (e && e.isComposing) return;
+      const v = (this.text || '').trim();
+      this.open = false;
+      this.$emit('update:modelValue', v);
+      this.$emit('enter', v);
     },
     onFocus() { this.search(); this.open = true; this.place(); },
     onBlur() {

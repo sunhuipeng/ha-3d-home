@@ -63,6 +63,8 @@ cd web && npm run dev              # 前端 Vite dev：http://localhost:5190，/
 > 2026-11-19 起 HA 连接改为**服务端全代理**：浏览器 WebSocket 连本服务同源 `/api/ha-ws`，由服务端转发给 HA；摄像头等媒体图走同源 `/api/ha-media/*` 由服务端带 token 转发。内外网/隧道场景行为完全一致，不再依赖浏览器能直连内网 HA 地址。
 >
 > 2026-11-19 进一步收紧：**HA 令牌不再下发浏览器**——服务端在代理里代管 WS 鉴权（收到 HA `auth_required` 后代发 token），`/api/config` 只回 `haUrl / hasToken` 且**全项目仅在编辑页打开「连接与服务」弹窗时请求**；展示页 / 编辑页启动序列只开 WS，未配置 HA 由服务端关闭码 4400 通知前端进演示模式。
+>
+> 2026-11-25 起「居控中枢」（ha3d-automation）也走**服务端代理**：编辑页「展示项配置」新增分组，可勾选中枢里的动作与场景（含图标与名字）；展示页点击经同源 `/api/automation/trigger/:id` 转发执行。中枢地址由环境变量 `HA3D_AUTOMATION_URL` 指定（默认 `http://127.0.0.1:8100`；Docker 跨容器时设为对方容器地址，如 `http://ha3d-automation:8100`）。中枢不可达时编辑页提示拉取失败、展示页 toast 显示错误原因；只有中枢的**正式版本**可被触发（列表里标「未发布」的项会给出明确拒绝）。
 
 用户自定义模型与插件统一放 `custom/`（结构与 `assets/` 相同，同 id 覆盖内置），升级镜像不丢失。**插件包**的 zip 结构（`plugin.json` + `plugin.js` + `models/*.glb`，无顶层目录）见 [PLUGIN-DEV.md](PLUGIN-DEV.md) §0.1；**家具包**（平铺 GLB + `item.json`）由 studio 打包生成，两者都在编辑页「导入」里上传。
 

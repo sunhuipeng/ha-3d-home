@@ -17,8 +17,9 @@ export const MAX_DISPLAY_ITEMS = 60;
  * 服务发出即视为完成、不进入 4s 回执等待；磁贴上显示当前开/关状态灯。 */
 export const TOGGLE_DOMAINS = ['light', 'switch', 'input_boolean'];
 
-/* 展示项来源分组：scene / script 由 HA 自动列举后勾选，entity 由 EntityInput 手动添加 */
-export const ITEM_KINDS = ['scene', 'script', 'entity'];
+/* 展示项来源分组：scene / script 由 HA 自动列举后勾选，entity 由 EntityInput 手动添加，
+ * automation（居控中枢的动作/场景）由 home 服务端代理拉候选后勾选（2026-11-25）。 */
+export const ITEM_KINDS = ['scene', 'script', 'entity', 'automation'];
 
 /* 域级默认 mdi（模仿 HA 前端的 domain 兜底图标）。attributes.icon 只有用户在 HA 里
  * 显式设置过才有值，没配的实体由前端按 domain 补一个与 HA 视觉一致的图标。
@@ -49,13 +50,19 @@ export function isToggleDomain(domain) {
  * 语义不同，这里特意叫 displayActionOf。 */
 export function displayActionOf(s) {
   const eid = (s && s.eid) || '';
-  const domain = String((s && s.type) || eid.split('.')[0] || '');
+  const kind = String((s && s.kind) || '');
+  /* automation 项 eid 是短码（无 domain. 前缀），域必须从 kind 取；
+   * proxy=true 告诉执行层走 home 服务端代理而不是 HA callService。 */
+  const isAuto = kind === 'automation';
+  const domain = isAuto ? 'automation' : String((s && s.type) || eid.split('.')[0] || '');
   const custom = s && typeof s.action === 'string' ? s.action.trim() : '';
   let service;
-  if (custom) service = custom;
+  if (isAuto) service = 'trigger';
+  else if (custom) service = custom;
   else if (domain === 'automation') service = 'trigger';
   else if (domain === 'button' || domain === 'input_button') service = 'press';
   else if (isToggleDomain(domain)) service = 'toggle';
   else service = 'turn_on';
-  return { domain, service, toggle: isToggleDomain(domain) && service === 'toggle' };
+  /* proxy 字段只在 automation 项上出现，避免改变既有 HA 项返回对象的形状（测试与下游都按原三字段比对） */
+  return { domain, service, toggle: isToggleDomain(domain) && service === 'toggle', ...(isAuto ? { proxy: true } : {}) };
 }

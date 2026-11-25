@@ -13,6 +13,7 @@
         <!-- 图标：HA 实体 attributes.icon / 项目自定义 / domain 默认 mdi 优先，
              都没有才用按名称猜的 emoji（脚本固定 📜） -->
         <i v-if="s.mdi" class="mdi" :class="'mdi-' + s.mdi"></i>
+        <span v-else-if="s.svg" class="ps-svg" v-html="safeSvg(s.svg)"></span>
         <template v-else>{{ s.icon }}</template>
       </span>
       <span class="ps-name">{{ s.name }}</span>
@@ -25,6 +26,7 @@
 <script>
 /* 无状态：展示项列表与「执行中 / 已确认」标记由父页给，点击只 emit 描述符。 */
 import { vTap } from '../../../composables/useTap.js';
+import { safeSvgHtml } from '../../../services/automation.js';
 
 export default {
   name: 'SceneStrip',
@@ -36,6 +38,7 @@ export default {
   },
   emits: ['run'],
   methods: {
+    safeSvg(svg) { return safeSvgHtml(svg); },
     run(s) { this.$emit('run', s); },
     titleOf(s) {
       if (s.toggle) return s.name + ' · 点击切换（当前' + (s.on ? '开启' : '关闭') + '）';
@@ -87,6 +90,10 @@ export default {
 .p-scene.lit .ps-name { font-weight: 600; }
 .p-scene.ok { background: var(--scene-ok-bg); border-color: var(--scene-ok-line); color: var(--scene-ok-ink); }
 .ps-ico { font-size: 19px; line-height: 1; }
+/* 居控中枢脚本图标：SVG 源码由服务端校验 + 本组件二次净化，currentColor 跟随磁贴文字色 */
+.ps-svg { display: inline-flex; width: 19px; height: 19px; }
+/* v-html 注入的 <svg> 不带 scoped 属性，必须 :deep 穿透 */
+.ps-svg :deep(svg) { width: 100%; height: 100%; display: block; }
 .ps-name {
   max-width: 100%; font-size: 11.5px; line-height: 1.1; letter-spacing: .2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

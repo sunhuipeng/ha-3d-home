@@ -24,6 +24,7 @@
  * ✓ 反馈 1500ms。所有定时器统一登记，dispose() 一次清干净。
  */
 import { displayActionOf } from './displayAction.js';
+import { triggerAutomation } from '../services/automation.js';
 
 export const SCENE_COOLDOWN_MS = 1200;
 export const SCENE_POLL_MS = 400;
@@ -44,6 +45,7 @@ export function sceneConfirmed(w, ha) {
 export function createSceneRunner({
   ha,
   toast,
+  fetch: fetchImpl,
   state = { busy: {}, done: {} },
   schedule = (fn, ms) => setTimeout(fn, ms),
   unschedule = (id) => clearTimeout(id),
@@ -79,12 +81,15 @@ export function createSceneRunner({
   function result(w, confirmed) {
     busy[w.eid] = false;
     locks[w.eid] = now() + (w.toggle ? TOGGLE_COOLDOWN_MS : SCENE_COOLDOWN_MS);
+    /* automation 短码不在 HA 实体表里，friendly() 只会原样回 id；优先用配置名。 */
+    const A = getHa();
+    const label = w.name || (A && typeof A.friendly === 'function' ? A.friendly(w.eid) : w.eid);
     if (confirmed) {
       done[w.eid] = true;
-      say((w.toggle ? '✓ 已切换 · ' : '✓ 已执行 · ') + getHa().friendly(w.eid));
+      say((w.toggle ? '✓ 已切换 · ' : '✓ 已执行 · ') + label);
       later(() => { done[w.eid] = false; }, SCENE_DONE_MS);
     } else {
-      say('已发送（未收到执行回执）· ' + getHa().friendly(w.eid));
+      say('已发送（未收到执行回执）· ' + label);
     }
   }
 
@@ -113,15 +118,31 @@ export function createSceneRunner({
     const eid = s.eid;
     if (busy[eid] || inflight.has(eid)) return;     // 本次还在执行（场景类看 busy，开关类看在途）
     if (now() < (locks[eid] || 0)) return;         // 冷却窗口内忽略
+    const act = displayActionOf(s);
+    /* automation（居控中枢动作/场景）：走 home 服务端代理触发，不经过 HA。
+     * 代理回执即可确认，不等 HA 状态推送（脚本 id 也不是 HA 实体，没有状态变化可比）。 */
+    if (act.proxy) {
+      busy[eid] = true;
+      say('正在执行 · ' + (s.name || eid));
+      triggerAutomation(eid, fetchImpl)
+        .then(() => { if (!disposed) result({ eid, name: s.name, toggle: false }, true); })
+        .catch((e) => {
+          if (disposed) return;
+          busy[eid] = false;
+          locks[eid] = now() + SCENE_COOLDOWN_MS;
+          say('✗ 执行失败 · ' + (s.name || eid) + (e && e.message ? '（' + e.message + '）' : ''));
+        });
+      return;
+    }
     const A = getHa();
     if (!A || typeof A.callService !== 'function') {   // HA 客户端缺失（demo 环境异常等）不崩，提示后退出
       say('✗ HA 未连接，无法执行 · ' + (s.name || eid));
       return;
     }
-    const act = displayActionOf(s);
     const before = A.getState(eid);
     const w = {
       eid,
+      name: s.name,
       preState: before ? before.state : null,
       preLast: before && before.attributes ? before.attributes.last_triggered : null,
       toggle: act.toggle,

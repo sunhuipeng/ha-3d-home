@@ -22,5 +22,6 @@ services:
       # 密码建议用 HA3D_AUTH_PASS_HASH（scrypt:<salt>:<hash>），避免明文；见 README
       HA3D_AUTH_USER: admin
       HA3D_AUTH_PASS: admin
+      HA3D_AUTOMATION_URL: http://127.0.0.1:8100
     mem_limit: 128m         # 内存上限（实际占用约 40-60MB）
 

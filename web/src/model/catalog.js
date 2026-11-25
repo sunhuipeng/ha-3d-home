@@ -617,16 +617,19 @@ export function serializeProject(p) {
   };
 
   /* 楼层级展示配置（数据卡 + 展示项；天气实体在项目级 settings）。
-   * displayItems 以配置列表为主表，逐项校验：eid 必须形如 domain.name，
-   * kind 只允许 scene / script / entity，可选 name / icon / action 原样保留。
+   * displayItems 以配置列表为主表，逐项校验：普通项 eid 必须形如 domain.name；
+   * kind='automation' 的居控中枢项是短码（无 domain. 前缀），按短码规则放行。
+   * kind 只允许 ITEM_KINDS，可选 name / icon / svg / action 原样保留。
    * 旧的 displayScenes / quickDevices 不再写出（不做兼容迁移）。 */
   const itemOut = (it) => {
     const eid = S(it && it.eid);
-    if (!eid || eid.indexOf('.') < 1) return null;
     const k = S(it.kind);
+    const isAuto = k === 'automation';
+    if (!eid || (isAuto ? !/^[A-Za-z0-9_-]{1,64}$/.test(eid) : eid.indexOf('.') < 1)) return null;
     const o = { eid, kind: ITEM_KINDS.includes(k) ? k : 'entity' };
     if (S(it.name)) o.name = S(it.name);
     if (S(it.icon)) o.icon = S(it.icon);
+    if (S(it.svg)) o.svg = S(it.svg);
     if (S(it.action)) o.action = S(it.action);
     return o;
   };
