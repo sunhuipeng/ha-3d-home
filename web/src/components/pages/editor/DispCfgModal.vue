@@ -65,7 +65,7 @@
       </div>
 
       <div class="form-row">
-        <button class="tb-btn" @click="sortOpen = true">↕ 调整排序（{{ items.length }}）</button>
+        <button class="tb-btn" @click="sortOpen = true">↕ 排序&改名（{{ items.length }}）</button>
         <button class="tb-btn" @click="clearAll">清空全部</button>
         <button class="tb-btn primary" @click="$emit('close')">完成</button>
       </div>
@@ -75,16 +75,22 @@
   <!-- 排序弹窗：列表顺序即展示页从左到右的顺序，↑↓ 调整，即时保存 -->
   <div class="modal sort-modal" v-show="sortOpen">
     <div class="modal-box sort-box">
-      <div class="modal-head"><h2>快捷操作 · 调整顺序</h2><button class="close" @click="sortOpen = false">×</button></div>
-      <div class="sp-tip" style="margin-bottom:10px">列表顺序即展示页从左到右的排列；用 ↑ ↓ 调整，改动即时保存。</div>
+      <div class="modal-head"><h2>快捷操作 · 调整顺序&名称</h2><button class="close" @click="sortOpen = false">×</button></div>
+      <div class="sp-tip" style="margin-bottom:10px">列表顺序即展示页从左到右的排列；用 ↑ ↓ 调整，✎ 可自定义显示名（清空即恢复默认），改动即时保存。</div>
       <div class="sort-list">
         <div class="sort-row" v-for="(it, i) in items" :key="it.eid">
           <span class="sort-no">{{ i + 1 }}</span>
           <div class="m">
-            <div class="n">{{ displayName(it) }} <span class="sort-kind">{{ kindText(it.kind) }}</span></div>
-            <div class="s"><code>{{ it.eid }}</code></div>
+            <input v-if="renameEid === it.eid" ref="renameInput" v-model="renameText"
+                   class="rename-input" spellcheck="false" :placeholder="originalName(it)"
+                   @keyup.enter="confirmRename(it)" @keyup.esc="cancelRename" @blur="confirmRename(it)">
+            <div v-else class="n">{{ displayName(it) }} <span class="sort-kind">{{ kindText(it.kind) }}</span></div>
+            <div class="s"><code>{{ it.eid }}</code>
+              <span v-if="isCustom(it)" class="rename-ok">原名：{{ originalName(it) }}</span>
+            </div>
           </div>
           <div class="sort-ops">
+            <button class="tb-btn tiny" @click="startRename(it)" title="自定义显示名">✎</button>
             <button class="tb-btn tiny" :disabled="i === 0" @click="move(i, -1)" title="上移">↑</button>
             <button class="tb-btn tiny" :disabled="i === items.length - 1" @click="move(i, 1)" title="下移">↓</button>
           </div>
@@ -135,10 +141,12 @@ export default {
       automationLoaded: false,
       automationErr: '',
       sortOpen: false,
+      renameEid: null,
+      renameText: '',
     };
   },
   watch: {
-    open(v) { if (v) this.loadAutomation(); else this.sortOpen = false; },
+    open(v) { if (v) this.loadAutomation(); else { this.sortOpen = false; this.cancelRename(); } },
   },
   mounted() { if (this.open) this.loadAutomation(); },
   computed: {
@@ -216,13 +224,30 @@ export default {
       else return;
       this.$emit('dirty');
     },
-    /* automation 项把 name / svg 一并写进配置：展示页脱离 automation 也能显示名字和图标。 */
+    /* automation 项把 name / srcName / svg 一并写进配置：name 是显示名（可被
+     * ✎ 改名覆盖），srcName 保留来源原名供对照；展示页脱离 automation 也能显示。 */
     toggleAutomation(a) {
       const svg = a.svg || a.icon;
       this.toggle('automation', a.id, {
         name: a.name || a.id,
+        srcName: a.name || a.id,
         ...(typeof svg === 'string' && svg ? { svg } : {}),
       });
+    },
+    /* 原名：automation 项优先用候选列表实时值，其次配置里的 srcName；
+     * HA 场景/脚本/实体用友好名。isCustom = 显示名与原名不同才算改名过。 */
+    originalName(it) {
+      if (it.kind === 'automation') {
+        const a = this.automationOptions.find((x) => x.id === it.eid);
+        if (a && a.name) return a.name;
+        if (it.srcName) return it.srcName;
+      }
+      const A = typeof window !== 'undefined' ? window.HA : null;
+      return A && A.friendly ? A.friendly(it.eid) : it.eid;
+    },
+    isCustom(it) {
+      const v = it.name || '';
+      return !!v && v !== this.originalName(it);
     },
     addEntity() {
       if (!this.canAdd) return;
@@ -255,6 +280,31 @@ export default {
       arr.splice(j, 1, tmp);
       this.$emit('dirty');
     },
+    /* 自定义显示名：写进配置项的 name 字段（展示页 it.name 优先，四类来源通用）。
+     * 清空提交 = 恢复默认名（删除 name 字段）。blur 与 enter 都会触发，
+     * 靠 renameEid 已清空来防止二次提交。 */
+    startRename(it) {
+      this.renameEid = it.eid;
+      this.renameText = it.name || '';
+      this.$nextTick(() => {
+        const r = this.$refs.renameInput;
+        const el = Array.isArray(r) ? r[0] : r;
+        if (el) { el.focus(); el.select(); }
+      });
+    },
+    confirmRename(it) {
+      if (this.renameEid !== it.eid) return;
+      const arr = this.ensure();
+      const row = arr && arr.find((x) => x.eid === it.eid);
+      if (row) {
+        const v = (this.renameText || '').trim();
+        if (v) row.name = v;
+        else delete row.name;
+        this.$emit('dirty');
+      }
+      this.cancelRename();
+    },
+    cancelRename() { this.renameEid = null; this.renameText = ''; },
   },
 };
 </script>
@@ -288,6 +338,9 @@ export default {
 .sort-kind { font-size: 10px; color: var(--ink2); font-weight: 400; border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; margin-left: 4px; }
 .sort-ops { flex: none; display: flex; gap: 4px; }
 .sort-ops .tb-btn { padding: 4px 9px; }
+/* 自定义显示名：行内编辑输入框 + 「已自定义」小标 */
+.rename-input { width: 100%; max-width: 240px; font-size: 13px; font-weight: 600; padding: 4px 8px; border: 1px solid var(--blue, #4a90d9); border-radius: 8px; background: var(--card-tile); color: var(--ink); outline: none; }
+.rename-ok { font-size: 10px; color: var(--blue, #4a90d9); margin-left: 6px; }
 @media (max-width: 900px) {
   .dcm-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dcm-cols .dcm-list { max-height: 200px; }

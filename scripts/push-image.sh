@@ -1,47 +1,58 @@
 #!/usr/bin/env bash
-# 构建镜像并推送到内网 Docker 仓库
-# 默认地址: 192.168.31.16:4000/sunhuipeng/ha-3d-home
-# 每次推送自动把 package.json 的 version 递增 patch（如 1.0.0 → 1.0.1），
-# 只推两个 tag：:<新版本> 与 :latest（latest 一定推）；BUMP=none 可关闭自动升版
-# 发布口径: 只推 linux/arm64（默认），其它架构必须显式传参
+# 构建镜像并推送到 Docker 仓库（内网 / 公网通用执行器）。
 #
-# 用法（第 1 个参数是平台，第 2 个参数是版本号，可都不填）:
-#   ./scripts/push-image.sh                         # 自动升版 → 只推 :<新版本> 和 :latest
-#   BUMP=minor ./scripts/push-image.sh              # 升 minor（1.0.1 → 1.1.0）
-#   BUMP=none ./scripts/push-image.sh               # 不升版，沿用当前 version 再推一次
-#   ./scripts/push-image.sh linux/arm64 2.0.0       # 手动指定版本号（不自动升版）
-#   ./scripts/push-image.sh linux/amd64             # 仅特殊需要时才用
+# 本脚本不含任何默认值：所有发布配置必须由环境变量显式传入，缺任一项即报错退出。
+# 配置集中在 package.json 的 npm scripts 里，一眼能看清推到哪里 / 什么架构 / 是否升版。
+# 正常入口：
+#   npm run push:image:arm64   # 内网 arm64 + 自动升 patch
+#   npm run push:image:public  # 公网 CNB 多架构 + 不升版本
 #
-# 可用环境变量覆盖: REGISTRY / NAMESPACE / IMAGE / PLATFORM / VERSION / BUMP
+# 必需环境变量（缺一报错）:
+#   REGISTRY   仓库域名，如 192.168.31.16:4000 / docker.cnb.cool
+#   NAMESPACE  命名空间或仓库路径，如 sunhuipeng / sunhuipeng/ha3d-images
+#   IMAGE      镜像名，如 ha-3d-home
+#   PLATFORM   构建平台，如 linux/arm64 或 linux/amd64,linux/arm64
+#   BUMP       版本策略: patch / minor / major / none（none = 沿用当前版本不升）
 #
-# 前置条件（换一台机器跑脚本时最容易踩）:
-#   1) 内网仓库是 HTTP，Docker 必须把 <host:port> 加进 insecure-registries:
-#      Docker Desktop / OrbStack → Settings → Docker Engine →
-#      "insecure-registries": ["192.168.31.16:4000"] → 重启 Docker
-#   2) 推送需要登录: docker login 192.168.31.16:4000（凭据存 ~/.docker/config.json）
+# 可选环境变量:
+#   VERSION    显式指定版本 tag；给了就不自动升版（缺省从 package.json 读）
+#   PUBLIC     1 = 公网 HTTPS 仓库（跳过 insecure-registries 提示）；缺省 0
 #
-# 目标机: docker pull <完整镜像名>:latest；或把 docker-compose.yml 的 build: .
-#         换成 image: <完整镜像名>:latest，再 docker compose up -d
+# 前置条件:
+#   1) 内网 HTTP 仓库需把 <REGISTRY> 加入 Docker 的 insecure-registries 并重启
+#   2) 推送前 docker login <REGISTRY>（公网 CNB: docker login docker.cnb.cool -u cnb）
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-REGISTRY="${REGISTRY:-192.168.31.16:4000}"
-NAMESPACE="${NAMESPACE:-sunhuipeng}"
-IMAGE="${IMAGE:-ha-3d-home}"
+# ---- 必需环境变量校验：缺任一即报错退出 ----
+required=(REGISTRY NAMESPACE IMAGE PLATFORM BUMP)
+missing=()
+for key in "${required[@]}"; do
+  if [ -z "${!key:-}" ]; then missing+=("$key"); fi
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "[push-image] 缺少必需环境变量: ${missing[*]}" >&2
+  echo "            脚本不含默认值，请通过 package.json 的 npm run push:image:* 调用，" >&2
+  echo "            或显式传入: ${required[*]}" >&2
+  exit 1
+fi
 
-# 发布口径固定 arm64；需要别的架构显式传第 1 个参数或 PLATFORM 环境变量
-PLATFORM="${1:-${PLATFORM:-linux/arm64}}"
+# PUBLIC: 行为开关（跳过内网 insecure 提示），缺省 0
+PUBLIC="${PUBLIC:-0}"
 
-# 每次推送自动升 package.json 的版本号（默认 patch: 1.0.0 → 1.0.1），
-# 版本 tag 用升完后的值，并一定同时推 latest。
-# BUMP=none 关闭自动升版；BUMP=minor / major 换递增位；
-# 显式传第 2 个参数或 VERSION 环境变量时按指定的来，不自动升版。
-export BUMP="${BUMP:-patch}"
-if [ -z "${2:-}" ] && [ -z "${VERSION:-}" ] && [ "$BUMP" != "none" ]; then
+# 校验 BUMP 取值
+case "$BUMP" in
+  patch|minor|major|none) ;;
+  *) echo "[push-image] BUMP 只能是 patch/minor/major/none，收到: ${BUMP}" >&2; exit 1 ;;
+esac
+
+# ---- 版本处理 ----
+# 显式 VERSION 优先；否则按 BUMP 升 package.json 的版本（none 不升）。
+if [ -z "${VERSION:-}" ] && [ "$BUMP" != "none" ]; then
   node <<'NODE'
 const fs = require('fs');
-const bump = process.env.BUMP || 'patch';
+const bump = process.env.BUMP;
 const d = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(d.version || ''));
 if (!m) { console.error('[push-image] package.json 的 version 不是 x.y.z，无法自动升版'); process.exit(1); }
@@ -65,13 +76,19 @@ NODE
 fi
 
 PKG_VERSION="$(node -p "require('./package.json').version" 2>/dev/null || true)"
-VERSION="${2:-${VERSION:-${PKG_VERSION:-dev}}}"
+if [ -z "${VERSION:-}" ]; then
+  if [ -z "$PKG_VERSION" ]; then
+    echo "[push-image] 无法从 package.json 读取 version，且未传 VERSION" >&2
+    exit 1
+  fi
+  VERSION="$PKG_VERSION"
+fi
 
 REMOTE="${REGISTRY}/${NAMESPACE}/${IMAGE}"
 HOSTPORT="${REGISTRY%%/*}"
 
-# 前置检查只提示、不阻断（不同 Docker 发行版的 info 输出略有差异）
-if ! docker info --format '{{json .RegistryConfig.IndexConfigs}}' 2>/dev/null | grep -q "\"${HOSTPORT}\""; then
+# 前置检查只提示、不阻断
+if [ "$PUBLIC" != "1" ] && ! docker info --format '{{json .RegistryConfig.IndexConfigs}}' 2>/dev/null | grep -q "\"${HOSTPORT}\""; then
   echo "[提示] ${HOSTPORT} 未出现在 Docker 的 insecure-registries，HTTP 仓库推送可能被拒绝。"
   echo "       Docker Desktop → Settings → Docker Engine 加 \"insecure-registries\": [\"${HOSTPORT}\"] 后重启。"
 fi
@@ -80,9 +97,7 @@ if [ -f "${HOME}/.docker/config.json" ] && ! grep -q "${HOSTPORT}" "${HOME}/.doc
   echo
 fi
 
-# 只推两个 tag：版本 tag + 必推的 latest。
-# 发布口径固定 arm64，不再加 -arm64 后缀 —— 只发一种架构时后缀没有意义，
-# 反而会在仓库里留下永不更新、容易与 latest 不一致的陈旧 tag。
+# 只推两个 tag：版本 tag + 必推的 latest
 TAG_LIST=("${REMOTE}:${VERSION}")
 if [ "$VERSION" != "latest" ]; then TAG_LIST+=("${REMOTE}:latest"); fi
 TAGS=()
@@ -98,4 +113,4 @@ for t in "${TAG_LIST[@]}"; do echo "    ${t}"; done
 echo
 echo "目标机拉取（始终最新）: docker pull ${REMOTE}:latest"
 echo "固定版本: docker pull ${REMOTE}:${VERSION}"
-echo "确认上传: docker pull ${REMOTE}:${VERSION}（不带登录态 curl 查 tags/list 会返回 401）"
+echo "公开仓库可在未登录环境验证: docker pull ${REMOTE}:${VERSION}"

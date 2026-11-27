@@ -40,6 +40,16 @@ npm run serve                      # 后端（项目根）：node --watch，默�
 cd web && npm run dev              # 前端 Vite dev：http://localhost:5190，/api 代理到 8077
 ```
 
+### 公开镜像（CNB）
+
+公开镜像仓库：<https://cnb.cool/sunhuipeng/ha3d-images>（打开后点顶部「**制品**」查看全部镜像与 tag）。公开仓库无需登录即可拉取，镜像为 **amd64 + arm64** 多架构。
+
+```bash
+docker pull docker.cnb.cool/sunhuipeng/ha3d-images/ha-3d-home:latest
+```
+
+用公开镜像部署（跳过本地构建）：把 `docker-compose.yml` 里的 `build: .` 删掉，将 `image:` 改成 `docker.cnb.cool/sunhuipeng/ha3d-images/ha-3d-home:latest`，然后 `docker compose up -d`（首次自动拉取；更新用 `docker compose pull && docker compose up -d`）。端口 `8099`、数据卷 `./data` 与 `./custom`、各项环境变量均沿用仓库自带的 compose，升级镜像不丢数据。
+
 **端口速查**
 
 | 端口 | 谁在监听 | 用途 |
