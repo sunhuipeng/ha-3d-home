@@ -57,21 +57,34 @@ export const Editor = {
   init(canvas) {
     if (this._inited) return;   // 重入守卫：HMR / 二次 init 会叠加监听器并出现双 RAF 循环
     this._inited = true;
+    this._domBindings = [];   // [target, type, fn, opts] 记录，dispose() 成对移除
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.resize();
-    window.addEventListener('resize', () => this.resize());
+    /* 审计 3.7：监听器统一走 bind() 记录，dispose() 成对移除（此前只有注册） */
+    const bind = (t, type, fn, opts) => { t.addEventListener(type, fn, opts); this._domBindings.push([t, type, fn, opts]); };
+    bind(window, 'resize', () => this.resize());
 
-    canvas.addEventListener('mousedown', (e) => this.onDown(e));
-    canvas.addEventListener('mousemove', (e) => this.onMove(e));
-    window.addEventListener('mouseup', (e) => this.onUp(e));
-    canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+    bind(canvas, 'mousedown', (e) => this.onDown(e));
+    bind(canvas, 'mousemove', (e) => this.onMove(e));
+    bind(window, 'mouseup', (e) => this.onUp(e));
+    bind(canvas, 'wheel', (e) => this.onWheel(e), { passive: false });
     /* 双击 / 右键 = 结束当前这一笔：墙断段、房间落定成多边形，**都不退出工具**，
      * 所以可以接着画下一段墙 / 下一间房。真正退出工具是 Esc（见 App.bindKeys）。
      * commitRoom() 在没在画房间时直接返回，其余工具下这两行等于原来的「清 wallStart」。 */
-    canvas.addEventListener('dblclick', () => { this.wallStart = null; this.commitRoom(); this.endMeasureChain(); this.render(); });
-    canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); this.wallStart = null; this.commitRoom(); this.endMeasureChain(); this.render(); });
-    canvas.addEventListener('mouseleave', () => { this.hoverVert = -1; this.render(); });
+    bind(canvas, 'dblclick', () => { this.wallStart = null; this.commitRoom(); this.endMeasureChain(); this.render(); });
+    bind(canvas, 'contextmenu', (e) => { e.preventDefault(); this.wallStart = null; this.commitRoom(); this.endMeasureChain(); this.render(); });
+    bind(canvas, 'mouseleave', () => { this.hoverVert = -1; this.render(); });
+  },
+
+  /* 监听器卸载出口（审计 3.7）：与 init() 成对；HMR / SPA 化场景复用组件实例时
+   * 先 dispose 再 init 不叠加。标线 / 撤销栈等业务状态不在此清（页面层负责）。 */
+  dispose() {
+    if (this._domBindings) {
+      this._domBindings.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
+      this._domBindings = null;
+    }
+    this._inited = false;
   },
 
   resize() {
@@ -90,17 +103,26 @@ export const Editor = {
     return [e.clientX - r.left, e.clientY - r.top];
   },
 
-  fit() {
-    if (!this.floor) return;
+  /* 楼层内容包围盒取样（墙 + 家具/设备 ±1m + 房间顶点），fit / center 共用
+   * （审计 2.6：此前两处约 40 行逐字重复）。房间可能画到墙线外一点，
+   * 不纳入会被裁在视野外；空楼层返回 null。 */
+  _floorBounds() {
+    if (!this.floor) return null;
     const pts = [];
     this.floor.walls.forEach((w) => pts.push([w.x1, w.y1], [w.x2, w.y2]));
     this.floor.furniture.forEach((f) => pts.push([f.x - 1, f.y - 1], [f.x + 1, f.y + 1]));
     this.floor.devices.forEach((d) => pts.push([d.x - 1, d.y - 1], [d.x + 1, d.y + 1]));
-    /* 房间顶点也参与取景/居中的包围盒：房间可能画到墙线外一点，不纳入会被裁在视野外 */
     ((this.floor.rooms) || []).forEach((r) => (r.pts || []).forEach((p) => pts.push(p)));
-    if (!pts.length) { this.ppm = PPM_BASE; this.ox = this.canvas.width / 2; this.oy = this.canvas.height / 2; this.render(); return; }
+    if (!pts.length) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     pts.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); });
+    return { minX, minY, maxX, maxY };
+  },
+
+  fit() {
+    const b = this._floorBounds();
+    if (!b) { this.ppm = PPM_BASE; this.ox = this.canvas.width / 2; this.oy = this.canvas.height / 2; this.render(); return; }
+    const { minX, minY, maxX, maxY } = b;
     const pad = 1.5;
     const w = this.canvas.width / devicePixelRatio, h = this.canvas.height / devicePixelRatio;
     const R = this.RULER;           // 刻度尺占据的边缘，适配时让出来
@@ -112,18 +134,11 @@ export const Editor = {
   },
 
   /* 居中: 保持当前缩放不变，只把户型包围盒平移回画布中心（解决平移后跑偏，一键归位）。
-   * 包围盒取样与 fit() 一致（墙 + 家具 + 设备），只是不重算 ppm */
+   * 包围盒取样与 fit() 共用 _floorBounds()，只是不重算 ppm */
   center() {
-    if (!this.floor) return;
-    const pts = [];
-    this.floor.walls.forEach((w) => pts.push([w.x1, w.y1], [w.x2, w.y2]));
-    this.floor.furniture.forEach((f) => pts.push([f.x - 1, f.y - 1], [f.x + 1, f.y + 1]));
-    this.floor.devices.forEach((d) => pts.push([d.x - 1, d.y - 1], [d.x + 1, d.y + 1]));
-    /* 房间顶点也参与取景/居中的包围盒：房间可能画到墙线外一点，不纳入会被裁在视野外 */
-    ((this.floor.rooms) || []).forEach((r) => (r.pts || []).forEach((p) => pts.push(p)));
-    if (!pts.length) { this.ox = this.canvas.width / 2; this.oy = this.canvas.height / 2; this.render(); return; }
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    pts.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); });
+    const b = this._floorBounds();
+    if (!b) { this.ox = this.canvas.width / 2; this.oy = this.canvas.height / 2; this.render(); return; }
+    const { minX, minY, maxX, maxY } = b;
     const w = this.canvas.width / devicePixelRatio, h = this.canvas.height / devicePixelRatio;
     const R = this.RULER;
     const aw = Math.max(40, w - R), ah = Math.max(40, h - R);
@@ -194,14 +209,7 @@ export const Editor = {
          * ② 点中已有墙体中部（离端点 0.35m 以外）→ 选中该墙并结束连续画墙，
          *    不会误落一条新墙；端点附近仍按落点处理（方便接墙 / 拐角相连） */
         const endHit = this.hitWallEnd(sx, sy);
-        if (endHit) {
-          this.dragEnd = { wall: endHit.wall, end: endHit.end, openings: [] };
-          [...this.floor.doors, ...this.floor.windows].forEach((o) => {
-            if (o.wallId !== endHit.wall.id) return;
-            this.dragEnd.openings.push({ o, t: this.projT(endHit.wall, o.x, o.y) });
-          });
-          break;
-        }
+        if (endHit) { this.startDragEnd(endHit.wall, endHit.end); break; }
         const onWall = this.floor.walls.find((w) => {
           const tt = this.projT(w, wx, wy);
           const cx = w.x1 + (w.x2 - w.x1) * tt, cy = w.y1 + (w.y2 - w.y1) * tt;
@@ -343,14 +351,7 @@ export const Editor = {
         }
         /* 已选中墙 → 先判两端圆圈: 命中则进入端点拖拽（门窗按比例跟随重投影） */
         const endHit = this.hitWallEnd(sx, sy);
-        if (endHit) {
-          this.dragEnd = { wall: endHit.wall, end: endHit.end, openings: [] };
-          [...this.floor.doors, ...this.floor.windows].forEach((o) => {
-            if (o.wallId !== endHit.wall.id) return;
-            this.dragEnd.openings.push({ o, t: this.projT(endHit.wall, o.x, o.y) });
-          });
-          break;
-        }
+        if (endHit) { this.startDragEnd(endHit.wall, endHit.end); break; }
         const hit = this.hitTest(wx, wy);
         if (hit) {
           this.select(hit.kind, hit.item.id, hit.kind);
@@ -527,6 +528,17 @@ export const Editor = {
     if (this.onViewChange) this.onViewChange(label || 'view');
   },
 
+  /* 进入拖墙端点状态：把挂在墙上的门窗按投影比例 t 一起带走（拖动时按新位置
+   * 重投影跟随）。画墙工具与选择工具两个入口共用（审计 2.8，此前两处手抄）。 */
+  startDragEnd(wall, end) {
+    const openings = [];
+    [...this.floor.doors, ...this.floor.windows].forEach((o) => {
+      if (o.wallId !== wall.id) return;
+      openings.push({ o, t: this.projT(wall, o.x, o.y) });
+    });
+    this.dragEnd = { wall, end, openings };
+  },
+
   snapG(v) { return Math.round(v / this.GRID) * this.GRID; },
 
   /* 按住 Shift 的正交锁定: 以 (bx,by) 为基准，把指针锁到水平/垂直轴上（取偏移大的那根轴为自由轴）。
@@ -537,11 +549,10 @@ export const Editor = {
     return { x: bx, y: wy, axis: 'v' };
   },
 
-  /* 画墙取点（预览线 / 起点 / 落点共用，保证所见即所得）:
-   * 先正交锁定 → 再吸附 → 吸附把点拉离锁定轴时退回锁定轴（只保留同轴端点吸附） */
-  wallPoint(wx, wy) {
-    if (!this.wallStart) return this.snap(wx, wy, null);
-    const bx = this.wallStart[0], by = this.wallStart[1];
+  /* 正交锁定 + 吸附的统一管道（审计 2.7：wallPoint / roomPoint / measurePoint
+   * 三份同式收敛）：先正交锁定 → 再吸附 → 吸附把点拉离锁定轴时退回轴
+   * （只保留同轴端点吸附）。(bx,by) = 锁定基准点，null = 无基准直接吸附。 */
+  orientedSnap(bx, by, wx, wy) {
     const L = this.lockAxis(bx, by, wx, wy);
     const [sx, sy] = this.snap(L.x, L.y, null);
     if (L.axis === 'h' && Math.abs(sy - L.y) > 1e-6) return [sx, L.y];
@@ -549,30 +560,28 @@ export const Editor = {
     return [sx, sy];
   },
 
-  /* 画房间取点：与 wallPoint 同一套「所见即所得」（Shift 正交 → 网格/端点吸附 → 吸附把点
-   * 拉离锁定轴时退回轴）。基准点 = 已落定的最后一个点，所以能沿上一条边拉出正交边。
-   * 落点与预览必须共用它，否则鼠标处看到的边和松手生成的边会差一截。 */
+  /* 画墙取点（预览线 / 起点 / 落点共用，保证所见即所得）；基准 = 墙起点 */
+  wallPoint(wx, wy) {
+    if (!this.wallStart) return this.snap(wx, wy, null);
+    const [bx, by] = this.wallStart;
+    return this.orientedSnap(bx, by, wx, wy);
+  },
+
+  /* 画房间取点：同一套「所见即所得」。基准点 = 已落定的最后一个点，
+   * 所以能沿上一条边拉出正交边。落点与预览必须共用它，否则鼠标处看到的边
+   * 和松手生成的边会差一截。 */
   roomPoint(wx, wy) {
     const pts = this.roomPts;
     if (!pts || !pts.length) return this.snap(wx, wy, null);
     const [bx, by] = pts[pts.length - 1];
-    const L = this.lockAxis(bx, by, wx, wy);
-    const [sx, sy] = this.snap(L.x, L.y, null);
-    if (L.axis === 'h' && Math.abs(sy - L.y) > 1e-6) return [sx, L.y];
-    if (L.axis === 'v' && Math.abs(sx - L.x) > 1e-6) return [L.x, sy];
-    return [sx, sy];
+    return this.orientedSnap(bx, by, wx, wy);
   },
 
-  /* 量距取点：与 wallPoint / roomPoint 同一套「Shift 正交 → 网格/端点吸附 → 吸附把点
-   * 拉离锁定轴就退回轴」。基准点 = 当前锚点，所以按住 Shift 能拉出严格水平/垂直的标线。 */
+  /* 量距取点：基准点 = 当前锚点，所以按住 Shift 能拉出严格水平/垂直的标线。 */
   measurePoint(wx, wy) {
     if (!this.measureFrom) return this.snap(wx, wy, null);
     const [bx, by] = this.measureFrom;
-    const L = this.lockAxis(bx, by, wx, wy);
-    const [sx, sy] = this.snap(L.x, L.y, null);
-    if (L.axis === 'h' && Math.abs(sy - L.y) > 1e-6) return [sx, L.y];
-    if (L.axis === 'v' && Math.abs(sx - L.x) > 1e-6) return [L.x, sy];
-    return [sx, sy];
+    return this.orientedSnap(bx, by, wx, wy);
   },
 
   /* 结束当前测量链（右键/双击）：只清锚点，已画的标线保留、不退出工具，
@@ -1691,7 +1700,9 @@ function colorAlpha(v) {
 
 let spaceHeld = false;
 let shiftHeld = false;        // 画墙 / 拖墙端点时按住 = 正交锁定
-window.addEventListener('keydown', (e) => {
+/* 审计 3.7：键监听从匿名改为具名 —— 模块级注册此前只有注册没有移除出口
+ * （MPA 页面级常驻无实害，HMR / 未来 SPA 化会叠加），disposeEditorKeys() 补出口。 */
+function onEditorKeyDown(e) {
   if (e.code === 'Space') spaceHeld = true;
   /* Esc 清标线放在引擎里自清一次：标线状态本来就在这块模块内，不依赖页面层
    * 键盘处理器的调用顺序（页面层那个还负责压撤销栈/退工具，两边互补不冲突）。 */
@@ -1706,8 +1717,8 @@ window.addEventListener('keydown', (e) => {
       || (Editor.tool === 'measure' && Editor.measureFrom)
       || Editor.dragEnd) Editor.render();
   }
-});
-window.addEventListener('keyup', (e) => {
+}
+function onEditorKeyUp(e) {
   if (e.code === 'Space') spaceHeld = false;
   if (e.key === 'Shift' && shiftHeld) {
     shiftHeld = false;
@@ -1715,6 +1726,17 @@ window.addEventListener('keyup', (e) => {
       || (Editor.tool === 'measure' && Editor.measureFrom)
       || Editor.dragEnd) Editor.render();
   }
-});
+}
 /* 切走窗口收不到 keyup，回来自动松开（避免锁定状态卡住） */
-window.addEventListener('blur', () => { spaceHeld = false; shiftHeld = false; });
+function onEditorBlur() { spaceHeld = false; shiftHeld = false; }
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', onEditorKeyDown);
+  window.addEventListener('keyup', onEditorKeyUp);
+  window.addEventListener('blur', onEditorBlur);
+}
+export function disposeEditorKeys() {
+  if (typeof window === 'undefined') return;
+  window.removeEventListener('keydown', onEditorKeyDown);
+  window.removeEventListener('keyup', onEditorKeyUp);
+  window.removeEventListener('blur', onEditorBlur);
+}

@@ -33,12 +33,14 @@
 <script>
 import { mapState } from 'pinia';
 import { useUiStore } from '../../../stores/ui';
+import { cardDisabled } from './cardMixins';
 
 const PAD = 10;   // 滑块半宽：轨道两端各内缩 10px，椭圆把手不会画到卡片外（CSS .dc-inner 同步）
 const HIT = 20;   // 命中半径：手指落在把手中心 ±20px 内才启动拖动（窄屏白名单读 data-hit）
 
 export default {
   name: 'CardRange',
+  mixins: [cardDisabled],
   props: { node: { type: Object, required: true } },
   emits: ['act'],
   data() {
@@ -50,7 +52,6 @@ export default {
   },
   computed: {
     ...mapState(useUiStore, ['jsGesture']),
-    dis() { return !!(this.node._disabled || !this.node.action); },
     /* 拖动中 / 刚发出还没回推 → 用本地值；否则用服务端值。
      * 注意 draft 可能被 watch 清空，这里必须判 null，否则值会跳到量程中点。 */
     shown() {

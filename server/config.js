@@ -12,18 +12,17 @@ const { json, wrap, readBody, errText } = require('./shared');
 /*
  * Home Assistant 连接测试。
  *
- * 前端默认浏览器直连 HA WebSocket（不受 CORS 限制），本服务不代理实时状态，
- * 也不再转发 /api/states 与 /api/services（早期 REST 兜底无调用方，已删除以收窄转发面）。
- * 这里只供「连接与服务」里的「测试连接」按钮调用一次 /api/config。
+ * HA 的实时状态与控制走全代理（ha-proxy.js，2026-11-19 起）：REST 经 /api/ha/*、
+ * WebSocket 经 /api/ha-ws（upgrade，服务端代管鉴权）。本文件只供「连接与服务」里的
+ * 「测试连接」按钮调用一次 /api/config。
  */
 
 
-function haBase() { return (core.getConfig().haUrl || '').replace(/\/+$/, ''); }
 
 /* 目前只有「测试连接」一个调用方（GET /api/config），method/body 参数暂留简单版 */
 function haRequest(apiPath) {
   return new Promise((resolve, reject) => {
-    const base = haBase();
+    const base = core.haBase();
     if (!base) return reject(new Error('未配置 Home Assistant 地址'));
     let url;
     try { url = new URL(base + apiPath); } catch (e) { return reject(new Error('HA 地址无效')); }

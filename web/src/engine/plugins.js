@@ -1,6 +1,12 @@
 /*
  * plugins.js — 有状态模型插件引擎
  *
+ * 生命周期契约（审计 3.6）：模块级可变单例（defs / byId / instances / bgOptions /
+ * bgFields / 各类缓存）。写入方约定：register / reset / loadAll 为状态变更唯一入口；
+ * bgOptions / bgFields 由两页的 bindBgSettings（EditApp 的 useBackground、
+ * useStageBoot）经 toRaw 注入同一引用 —— 引擎是宿主不是拷贝方。热刷新（重复
+ * register）会注销旧 def 的全部实例（见 register 内注释）。监听器不落在本模块。
+ *
  * 解决两类模型:
  *   1) 目录静态 GLB 家具（floors.furniture 的 mid → assets/models）—— 仍走 view3d 的
  *      buildFurniture，不经过本引擎；**想按参数动态绘制的家具**（如衣柜门数随长度变）
@@ -59,9 +65,8 @@
 import * as THREE from 'three';
 import { HA } from '../services/ha.js';
 import { DEFAULT_FLOOR_H, devTypeOf } from '../model/catalog.js';
+import { migrateBgStyleId } from '../model/bgId.js';
 
-/* 背景插件 id 变更记录: 旧 id → 当前 id（旧项目里的 settings.background 据此自动迁移） */
-export const BG_ID_ALIAS = { backdrop_ground: 'background' };
 
 /* 门/窗放置缺省宽（米）: 插件 def.defaultW 未就绪/未声明时的引擎兜底。
  * 使用点: editor 放置门窗、view3d 掏洞、plugins 占位薄板 —— 三处必须同值，改这里一处。 */
@@ -121,6 +126,54 @@ export const LAMP_GLOW = {
   spriteFade: 0,
 };
 
+/* 灯光贴图模块级缓存（跨实例共享，全引擎只建一份）：
+ *   glowTex  径向渐变球形光晕（Sprite）；
+ *   emitterTex 贴面发光平顶渐变（面光 Plane/Circle）。
+ * 之前声明在 _makeCtx() 函数体内，每盏灯各建一套 256² CanvasTexture——
+ * 既没共享、又因 disposeGroup 不回收贴图而永不释放。提到模块级后
+ * 整个会话最多各 1 张，随页面生命周期存在，无泄漏面。 */
+let glowTexCache = null;
+let emitterTexCache = null;
+function makeGlowTex(T) {
+  if (!glowTexCache) {
+    const n = LAMP_GLOW.texSize, r = n / 2;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = n;
+    const g = cv.getContext('2d');
+    /* 多色标：中心近白暖黄给「亮核」，中段留一段实光，长尾淡出避免硬边。
+     * 旧版只有 2 个 stop 且 64px，俯视就是一小团发糊的淡黄雾。 */
+    const rg = g.createRadialGradient(r, r, 0, r, r, r);
+    rg.addColorStop(0, 'rgba(255,248,222,1)');
+    rg.addColorStop(0.10, 'rgba(255,232,170,.95)');
+    rg.addColorStop(0.28, 'rgba(255,210,120,.55)');
+    rg.addColorStop(0.55, 'rgba(255,190,84,.18)');
+    rg.addColorStop(0.80, 'rgba(255,180,66,.05)');
+    rg.addColorStop(1, 'rgba(255,176,60,0)');
+    g.fillStyle = rg;
+    g.fillRect(0, 0, n, n);
+    glowTexCache = new T.CanvasTexture(cv);
+  }
+  return glowTexCache;
+}
+function makeEmitterTex(T) {
+  if (!emitterTexCache) {
+    const n = LAMP_GLOW.texSize, r = n / 2;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = n;
+    const g = cv.getContext('2d');
+    const rg = g.createRadialGradient(r, r, 0, r, r, r);
+    rg.addColorStop(0, 'rgba(255,250,232,1)');
+    rg.addColorStop(0.42, 'rgba(255,242,206,1)');
+    rg.addColorStop(0.68, 'rgba(255,232,170,.96)');
+    rg.addColorStop(0.86, 'rgba(255,214,132,.55)');
+    rg.addColorStop(1, 'rgba(255,205,120,0)');
+    g.fillStyle = rg;
+    g.fillRect(0, 0, n, n);
+    emitterTexCache = new T.CanvasTexture(cv);
+  }
+  return emitterTexCache;
+}
+
 export const PluginEngine = {
   defs: [],          // 已注册插件定义
   byId: {},          // id -> def
@@ -137,7 +190,7 @@ export const PluginEngine = {
     if (isBg && !Array.isArray(def.styles)) return;
     // 统一插件类: 门/窗只是 type:'door' / 'window' 的贴墙模型，能力与设备完全同构
     // （click / stateText / plan2d / isOn / 标签一套不差）。老写法 kind:'opening' 已废除。
-    if (!isBg && !def.type && window.__HA_DBG !== false) {
+    if (!isBg && !def.type && window.__HA_DBG === true) {   // 调试开关显式开启才提示（语义与 services/ha.js 一致）
       console.warn('[PluginEngine] 插件缺 type（HA 域或 door/window），styles 不会出现在样式面板:', def.id);
     }
     // 资源基准目录: 插件自带模型按 <base>models/xxx 引用；默认跟随 plugin.js 实际所在目录
@@ -180,6 +233,17 @@ export const PluginEngine = {
     if (this.byId[def.id]) {   // 重复加载（热刷新）时替换
       const i = this.defs.indexOf(this.byId[def.id]);
       if (i >= 0) this.defs.splice(i, 1);
+      /* 审计 3.8：旧 def 的已建实例一并注销 —— 热刷新只换 def 的话，旧 model3d
+       * 闭包持有的旧代码还在 instances 里被每帧 update/tick 继续跑，改了插件
+       * 看到的仍是旧行为（开发期影响）。dispose 释放旧实例资源、dead 标记作废
+       * 仍在飞行中的异步加载回调；Three 资源由 view3d.disposeGroup 统一释放，
+       * 与 reset() 同一口径。 */
+      this.instances = this.instances.filter((rec) => {
+        if (rec.def !== this.byId[def.id]) return true;
+        rec.dead = true;
+        if (rec.inst && rec.inst.dispose) { try { rec.inst.dispose(); } catch (e) { /* ignore */ } }
+        return false;
+      });
     }
     this._defCache = null;     // 插件集变了，defFor / styleOf 查询缓存整体失效
     this._styleCache = null;
@@ -196,7 +260,14 @@ export const PluginEngine = {
    * 按 id 匹配清单项、用清单项自带的 entry 加载 —— 兼容 id≠dir 的自定义包。
    * 幂等: 同一页面只加载一次（_loading），与原来行为一致。 */
   loadAll(needed) {
-    if (this._loading) return this._loading;
+    /* 审计 1.10：_loading 此前永不重置 —— 首次按需集加载后，后续任何全量
+     * loadAll() 都返回第一次的 Promise（参数被静默吞掉）。改为「同参复用、
+     * 异参重载」：同参并发调用仍合并为一次请求（幂等不破坏），参数变了才
+     * 重新拉清单 —— 新 defs 经 register 替换 + 注销旧实例（热刷新语义）。 */
+    const key = needed == null ? 'all'
+      : (typeof needed === 'function' ? 'cb' : [...(needed.has ? needed : new Set(needed))].sort().join(','));
+    if (this._loading && this._loadingKey === key) return this._loading;
+    this._loadingKey = key;
     this._loading = (async () => {
       let list = [];
       try {
@@ -690,13 +761,7 @@ export const PluginEngine = {
 
   /* 背景聚合 id 归一化: 早期插件目录/注册 id 为 backdrop_ground，已更名为 background；
    * 旧项目里存的 'backdrop_ground:grass' 自动映射到 'background:grass'，参数键同步迁移。 */
-  migrateBgId(id) {
-    if (typeof id !== 'string' || !id) return '';
-    const i = id.indexOf(':');
-    if (i < 0) return id;
-    const pid = BG_ID_ALIAS[id.slice(0, i)];
-    return pid ? pid + id.slice(i) : id;
-  },
+  migrateBgId(id) { return migrateBgStyleId(id); },   // 映射唯一出处 model/bgId.js（审计 2.9）
 
   /* 背景实体绑定的存储键 = **插件 id**，不是 '<插件id>:<样式id>'。
    * 字段是插件顶层 def.fields 声明的（studio 里同样是 proj.fields 插件级），
@@ -958,9 +1023,9 @@ export const PluginEngine = {
 
     /* 房屋整体抬升到 H：设备 / 家具 / 门窗都是 root 的子节点，高度继续相对房屋，
      * 实例数据（d.z / obj.z / project.json）完全不写 H。背景 group 的 y 仍是 0 —— 山脚、
-     * 河流、稻田留在基准面，插件自己在 y=H 画平台；H<0 时用上面的带洞地面挖出下沉庭院。 */
+     * 河流、稻田留在基准面，插件自己在 y=H 画平台；H<0 时用上面的带洞地面挖出下沉庭院。
+     * 走引擎 setter（审计 3.5：不再直写 root.position.y —— View3D.setHouseY 是唯一入口）。 */
     if (typeof v3.setHouseY === 'function') v3.setHouseY(H);
-    else if (v3.root) v3.root.position.y = H;    // 兼容没有 setHouseY 的旧 View3D
 
     /* 两个通道共用一份只读 api（数据通道多一个 overlayGroup） */
     const api = {
@@ -1202,50 +1267,12 @@ export const PluginEngine = {
     const T = THREE;   // Three.js 命名空间（插件页面加载时已就绪）
     const self = this;
     const lambertF = (color, opts) => new T.MeshLambertMaterial(Object.assign({ color: new T.Color(color) }, opts || {}));
-    let glowCache = null;   // 径向渐变光晕贴图（跨实例共享）
-    const glowTexF = () => {
-      if (!glowCache) {
-        const n = LAMP_GLOW.texSize, r = n / 2;
-        const cv = document.createElement('canvas');
-        cv.width = cv.height = n;
-        const g = cv.getContext('2d');
-        /* 多色标：中心近白暖黄给「亮核」，中段留一段实光，长尾淡出避免硬边。
-         * 旧版只有 2 个 stop 且 64px，俯视就是一小团发糊的淡黄雾。 */
-        const rg = g.createRadialGradient(r, r, 0, r, r, r);
-        rg.addColorStop(0, 'rgba(255,248,222,1)');
-        rg.addColorStop(0.10, 'rgba(255,232,170,.95)');
-        rg.addColorStop(0.28, 'rgba(255,210,120,.55)');
-        rg.addColorStop(0.55, 'rgba(255,190,84,.18)');
-        rg.addColorStop(0.80, 'rgba(255,180,66,.05)');
-        rg.addColorStop(1, 'rgba(255,176,60,0)');
-        g.fillStyle = rg;
-        g.fillRect(0, 0, n, n);
-        glowCache = new T.CanvasTexture(cv);
-      }
-      return glowCache;
-    };
+    /* 光晕/贴面贴图：模块级缓存（makeGlowTex / makeEmitterTex），跨实例共享 */
+    const glowTexF = () => makeGlowTex(T);
     /* 贴面发光贴图（与球形光晕 glowTex 分开）：平顶渐变——中心大平台接近满亮，
      * 只在外圈柔和淡出。贴到 Plane/Circle 面光上时，整块发光面均匀发亮而不是
      * 只有一个亮核，方板/圆盘/长条看起来才是「整盏灯在发光」。跨实例共享。 */
-    let emitterCache = null;
-    const emitterTexF = () => {
-      if (!emitterCache) {
-        const n = LAMP_GLOW.texSize, r = n / 2;
-        const cv = document.createElement('canvas');
-        cv.width = cv.height = n;
-        const g = cv.getContext('2d');
-        const rg = g.createRadialGradient(r, r, 0, r, r, r);
-        rg.addColorStop(0, 'rgba(255,250,232,1)');
-        rg.addColorStop(0.42, 'rgba(255,242,206,1)');
-        rg.addColorStop(0.68, 'rgba(255,232,170,.96)');
-        rg.addColorStop(0.86, 'rgba(255,214,132,.55)');
-        rg.addColorStop(1, 'rgba(255,205,120,0)');
-        g.fillStyle = rg;
-        g.fillRect(0, 0, n, n);
-        emitterCache = new T.CanvasTexture(cv);
-      }
-      return emitterCache;
-    };
+    const emitterTexF = () => makeEmitterTex(T);
     /* 灯自身亮度（0..1）：lighting.js 算房间亮度用的也是 attributes.brightness/255，
      * 这里保持同口径，避免「地面亮了、灯还是一样亮」。没有 brightness 的实体按满亮。
      * 引擎自己读，插件 kit.set(on, rgb) 的调用方式不用改。 */

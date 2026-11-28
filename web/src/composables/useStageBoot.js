@@ -20,7 +20,7 @@
  * 一律走 hooks，不塞进来 —— 这块一混，两页就会互相牵制。
  */
 
-import { nextTick, watch } from 'vue';
+import { nextTick, toRaw, watch } from 'vue';
 import { useCatalogStore } from '../stores/catalog';
 import { useHaStore } from '../stores/ha';
 import { initLighting } from '../engine/lighting.js';
@@ -156,9 +156,11 @@ export async function startStage3D({
 
   if (project) {
     const settings = project.settings || {};
-    /* 深拷贝隔离：引擎拿到的不能是 Pinia/Vue 的 reactive proxy */
-    PluginEngine.bgOptions = JSON.parse(JSON.stringify(settings.backgroundOptions || {}));
-    PluginEngine.bgFields = JSON.parse(JSON.stringify(settings.backgroundFields || {}));
+    /* toRaw 直接注入（审计 2.10：与编辑页 useBackground 同一策略 —— 此前两页
+     * 一处深拷贝隔离、一处 toRaw 共享引用，各维护一套拷贝/失效逻辑；
+     * 「reactive 不进引擎」的家规由 toRaw 剥代理保证，引擎读写同一 raw 目标） */
+    PluginEngine.bgOptions = toRaw(settings.backgroundOptions) || {};
+    PluginEngine.bgFields = toRaw(settings.backgroundFields) || {};
     View3D.rebuild(project, floorIndex());     // 楼层模型 + 标签 + 渲染（统一入口）
     View3D.frame(DEFAULT_CAM);
 

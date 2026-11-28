@@ -44,8 +44,6 @@ export const WIDE_MEDIA_QUERY =
  * query 同时命中，窄屏 ::after 的 left:0/right:0 漏进宽屏，把右侧羽化面板拉成
  * 左侧一整块黑纱（2026-11-22 投影仪模拟实测踩坑）。逗号 = OR：
  *   W<768；或 W<1024 且 H<450；或 W<1024 且宽高比<1.3（13/10 的取反 = 1299/1000）。 */
-export const NARROW_MEDIA_QUERY =
-  '(max-width: 767px), (max-width: 1023px) and (max-height: 449px), (max-width: 1023px) and (max-aspect-ratio: 1299/1000)';
 export const RIGHT_PANEL_W = 340;      // 宽屏右侧竖栏宽
 export const RIGHT_PANEL_GAP = 14;     // 左列与右栏之间的间隙（旧代码写死 354 = 340 + 14）
 export const CONTENT_MIN_W = 320;      // 左列最小可视宽度

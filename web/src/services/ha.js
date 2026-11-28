@@ -1,7 +1,8 @@
 /*
- * services/ha.js — Home Assistant 浏览器直连 WebSocket 客户端（非 Vue 服务层）
+ * services/ha.js — Home Assistant WebSocket 客户端（非 Vue 服务层）
  *
- * 这里不是引擎层：它不做绘制，只负责连接 /api/websocket → auth(长期令牌) →
+ * 这里不是引擎层：它不做绘制，只负责连接本服务同源的 /api/ha-ws（全代理，见
+ * server/ha-proxy.js：服务端转发到 HA 并代管长期令牌，浏览器侧免 auth 步骤）→
  * subscribe_entities 实时推送，支持 get_states / call_service；未配置 HA 时进入
  * 演示模式（模拟实体）。WebSocket / pending Promise / 定时器 / entities Map 都是
  * 协议状态机，必须保持普通对象，不能进 Pinia reactive state。
@@ -9,7 +10,9 @@
  * UI 需要的响应式投影在 stores/ha.js，由 bridge.js 在 status/change 事件边界写入；
  * 本文件末尾把 HA 挂到 window（供动态插件与旧调用点做特性检测），并注册回前台 /
  * 网络恢复的全局监听 —— 断线重连、退避、心跳与恢复全收在这里，两页入口不用各写一份。
+ * 演示模式模拟器（假实体 + 服务调用模拟）已拆到 haDemo.js（审计 3.13）。
  */
+import { startDemo, stopDemo, demoCall } from './haDemo.js';
 
 /* 断线重连 / 回前台恢复的节奏常量（毫秒）。
  * 旧实现只有「ws.onclose → 固定 4s 定时器」：后台被冻结时这个定时器不跑，回前台
@@ -26,14 +29,14 @@ const RESUME_DEBOUNCE = 250;  // visibilitychange / focus / online 会在同一�
 
 export const HA = {
   ws: null,
-  url: '',           // 仅存服务端已配置的 haUrl（信息展示用），不参与连接
-  token: '',         // 已废弃：HA 令牌不再下发浏览器，由服务端代理代管鉴权
-  hasToken: false,   // 服务端是否已配置令牌（GET /api/config 的 hasToken 镜像）
+  /* 连接配置镜像已删（审计 1.15）：loadConfig 的返回值即唯一出处，
+   * stores/ha.js 消费返回值；字段镜像此前只写不读。 */
   msgId: 10,
   pending: {},        // id -> {resolve, reject}
   entities: new Map(),// entity_id -> state object {state, attributes:{friendly_name,...}}
   connected: false,
   demo: false,
+  demoTimer: null,    // 演示模式漂移定时器（实现在 haDemo.js，timer 仍挂 HA 上随 close() 清理）
   listeners: { change: [], status: [] },
 
   /* 连接恢复状态机（纯协议字段，绝不进 Pinia）：
@@ -56,6 +59,12 @@ export const HA = {
   loaded() { return this.entities.size > 0; },
 
   on(evt, fn) { this.listeners[evt].push(fn); },
+  /* 与 on() 成对的移除（审计 3.7：lighting 等引擎模块卸载出口需要） */
+  off(evt, fn) {
+    const arr = this.listeners[evt];
+    const i = arr ? arr.indexOf(fn) : -1;
+    if (i >= 0) arr.splice(i, 1);
+  },
   emit(evt, data) { this.listeners[evt].forEach((f) => { try { f(data); } catch (e) { console.error(e); } }); },
 
   async loadConfig() {
@@ -66,8 +75,6 @@ export const HA = {
     const r = await fetch('/api/config');
     if (!r.ok) throw new Error('读取连接配置失败: HTTP ' + r.status);
     const c = await r.json();
-    this.url = (c.haUrl || '').trim();
-    this.hasToken = !!c.hasToken;
     return c;
   },
 
@@ -152,7 +159,9 @@ export const HA = {
         this.startDemo();
       } else if (msg.type === 'event' && msg.event) {
         const ev2 = msg.event;
-        if (window.__HA_DBG !== false) console.log('[HA-DBG] 收到 ws 事件:', JSON.stringify(ev2).slice(0, 300));
+        /* 调试日志显式开启才打印（? 或注入 window.__HA_DBG=true）：
+         * 旧写法 `!== false` 默认恒真，生产环境每个 WS 事件都序列化打印 */
+        if (window.__HA_DBG === true) console.log('[HA-DBG] 收到 ws 事件:', JSON.stringify(ev2).slice(0, 300));
         /* subscribe_events 的 state_changed（完整事件格式） */
         if (ev2.event_type === 'state_changed' && ev2.data && ev2.data.entity_id) {
           const d = ev2.data;
@@ -369,167 +378,13 @@ export const HA = {
     const eid = d.entity_id;
     delete d.entity_id;
     const target = eid ? { entity_id: eid } : {};
-    if (this.demo) return this.demoCall(domain, service, target, d);
+    if (this.demo) return demoCall(this, domain, service, target, d);
     return this.send({ type: 'call_service', domain, service, target, service_data: d });
   },
 
-  /* ---------------- 演示模式（未配置 HA 时可用） ---------------- */
-  demoTimer: null,
-  startDemo() {
-    if (this.demo) return;
-    this.demo = true;
-    this._reconnecting = false;
-    this.stopHeartbeat();
-    this.setStatus('demo');
-    const mk = (eid, state, attrs, domain) => ({ entity_id: eid, state, attributes: Object.assign({ friendly_name: eid.split('.')[1].replace(/_/g, ' ') }, attrs), demo: true, domain });
-    const demoEntities = [
-      mk('light.living', 'on', { friendly_name: '客厅 吸顶灯', brightness: 180, brightness_pct: 71, color_temp_kelvin: 3000, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('light.living_ambient', 'off', { friendly_name: '客厅 氛围灯', brightness: 0, brightness_pct: 0, color_temp_kelvin: 2700, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('light.master', 'on', { friendly_name: '卧室 主灯', brightness: 220, brightness_pct: 86, color_temp_kelvin: 4000, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('light.kitchen', 'off', { friendly_name: '厨房 灯', brightness: 0, brightness_pct: 0, color_temp_kelvin: 5000, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('light.study', 'off', { friendly_name: '书房 灯', brightness: 0, brightness_pct: 0, color_temp_kelvin: 4500, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('light.hall', 'on', { friendly_name: '楼道 灯', brightness: 120, brightness_pct: 47, color_temp_kelvin: 3000, min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 }, 'light'),
-      mk('switch.ac_plug', 'on', { friendly_name: '空调插座' }, 'switch'),
-      mk('switch.tv_plug', 'off', { friendly_name: '电视插座' }, 'switch'),
-      /* 卡片用：气候 / 风扇 / 热水器必须有属性，否则 range 取不到 attr: 边界会直接不渲染 */
-      mk('climate.living', 'cool', {
-        friendly_name: '客厅 空调', temperature: 24, current_temperature: 26.5,
-        min_temp: 16, max_temp: 30, temperature_step: 0.5,
-        hvac_modes: ['off', 'cool', 'heat', 'dry', 'fan_only', 'auto'], hvac_mode: 'cool',
-        fan_modes: ['auto', 'low', 'medium', 'high'], fan_mode: 'auto',
-      }, 'climate'),
-      mk('fan.bedroom', 'on', {
-        friendly_name: '卧室 风扇', percentage: 60, percentage_step: 10, oscillating: false,
-      }, 'fan'),
-      mk('water_heater.boiler', 'eco', {
-        friendly_name: '阳台 热水器', temperature: 50, current_temperature: 48,
-        min_temp: 30, max_temp: 75, operation_mode: 'eco',
-      }, 'water_heater'),
-      mk('sensor.living_temp', '24.5', { friendly_name: '客厅 温度', unit_of_measurement: '°C' }, 'sensor'),
-      mk('sensor.living_hum', '56', { friendly_name: '客厅 湿度', unit_of_measurement: '%' }, 'sensor'),
-      mk('sensor.outdoor_temp', '18.2', { friendly_name: '室外 温度', unit_of_measurement: '°C' }, 'sensor'),
-      mk('sensor.outdoor_hum', '62', { friendly_name: '室外 湿度', unit_of_measurement: '%' }, 'sensor'),
-      mk('sensor.power', '860', { friendly_name: '全家 功率', unit_of_measurement: 'W' }, 'sensor'),
-      mk('sensor.pm25', '23', { friendly_name: 'PM2.5', unit_of_measurement: 'µg/m³' }, 'sensor'),
-      mk('weather.home', 'partlycloudy', { friendly_name: '天气', temperature: 18, humidity: 62 }, 'weather'),
-      mk('cover.curtain_living', 'open', { friendly_name: '客厅 窗帘', current_position: 70, supported_features: 15 }, 'cover'),
-      mk('vacuum.robot', 'docked', { friendly_name: '扫地机器人', battery_level: 82 }, 'vacuum'),
-      mk('scene.good_morning', 'off', { friendly_name: '晨起模式' }, 'scene'),
-      mk('scene.movie_night', 'off', { friendly_name: '观影模式' }, 'scene'),
-      mk('scene.away', 'off', { friendly_name: '离家模式' }, 'scene'),
-      mk('scene.sleep', 'off', { friendly_name: '睡眠模式' }, 'scene'),
-      mk('automation.auto_light', 'on', { friendly_name: '人来灯亮' }, 'automation'),
-      mk('automation.night_off', 'on', { friendly_name: '深夜熄灯' }, 'automation'),
-    ];
-    demoEntities.forEach((s) => this.entities.set(s.entity_id, s));
-    this.emit('change', { full: true });
-    this.demoTimer = setInterval(() => {
-      // 温湿度缓慢波动，制造“实时”感
-      const drift = (eid, base, amp, dec) => {
-        const e = this.entities.get(eid);
-        if (!e) return;
-        const v = parseFloat(e.state) || base;
-        const nv = Math.max(base - amp, Math.min(base + amp, v + (Math.random() - 0.5) * amp / 8));
-        e.state = nv.toFixed(dec);
-      };
-      drift('sensor.living_temp', 24.5, 2, 1);
-      drift('sensor.living_hum', 56, 8, 0);
-      drift('sensor.outdoor_temp', 18.2, 3, 1);
-      drift('sensor.power', 860, 300, 0);
-      this.emit('change', { demo: true });
-    }, 3000);
-  },
-  stopDemo() { this.demo = false; if (this.demoTimer) { clearInterval(this.demoTimer); this.demoTimer = null; } },
-  /* 演示模式的「服务调用」：必须吃 service_data，否则卡片上的滑块/下拉点了没有任何反馈，
-   * 而本项目所有卡片验证都跑在演示模式 + 无头 Edge 里。 */
-  demoCall(domain, service, target, data) {
-    const eid = target && target.entity_id;
-    const d = data || {};
-    const e = eid && this.entities.get(eid);
-
-    if (e) {
-      const a = e.attributes;
-      const on = () => { e.state = 'on'; };
-      const off = () => { e.state = 'off'; };
-
-      if (domain === 'light') {
-        if (service === 'toggle') e.state = e.state === 'on' ? 'off' : 'on';
-        else if (service === 'turn_on') {
-          on();
-          if (d.brightness_pct != null) {
-            a.brightness_pct = Math.round(d.brightness_pct);
-            a.brightness = Math.round(d.brightness_pct * 255 / 100);
-          }
-          if (d.brightness != null) {
-            a.brightness = Math.round(d.brightness);
-            a.brightness_pct = Math.round(d.brightness / 255 * 100);
-          }
-          if (d.color_temp_kelvin != null) a.color_temp_kelvin = Math.round(d.color_temp_kelvin);
-        } else if (service === 'turn_off') {
-          off(); a.brightness_pct = 0; a.brightness = 0;
-        }
-      } else if (domain === 'switch' || domain === 'fan' || domain === 'input_boolean') {
-        if (service === 'toggle') e.state = e.state === 'on' ? 'off' : 'on';
-        else if (service === 'turn_on') on();
-        else if (service === 'turn_off') off();
-        if (service === 'set_percentage' && d.percentage != null) {
-          a.percentage = Math.round(d.percentage);
-          e.state = d.percentage > 0 ? 'on' : 'off';
-        }
-        if (service === 'set_speed' && d.speed != null) { a.speed = d.speed; on(); }
-        if (service === 'oscillate' && d.oscillating != null) a.oscillating = !!d.oscillating;
-      } else if (domain === 'climate') {
-        if (service === 'turn_on') e.state = a.hvac_mode && a.hvac_mode !== 'off' ? a.hvac_mode : 'auto';
-        else if (service === 'turn_off') { off(); a.hvac_mode = 'off'; }
-        else if (service === 'toggle') e.state = e.state === 'off' ? (a.hvac_mode === 'off' ? 'auto' : a.hvac_mode) : 'off';
-        if (service === 'set_temperature' && d.temperature != null) {
-          a.temperature = d.temperature;
-          if (e.state === 'off') { a.hvac_mode = 'heat'; e.state = 'heat'; }
-        }
-        if (service === 'set_hvac_mode' && d.hvac_mode) { a.hvac_mode = d.hvac_mode; e.state = d.hvac_mode; }
-        if (service === 'set_fan_mode' && d.fan_mode) a.fan_mode = d.fan_mode;
-      } else if (domain === 'cover') {
-        if (service === 'open_cover') { e.state = 'open'; a.current_position = 100; }
-        else if (service === 'close_cover') { e.state = 'closed'; a.current_position = 0; }
-        else if (service === 'toggle') {
-          const opened = e.state === 'open';
-          e.state = opened ? 'closed' : 'open';
-          a.current_position = opened ? 0 : 100;
-        }
-        if (service === 'set_cover_position' && d.position != null) {
-          a.current_position = Math.round(d.position);
-          e.state = d.position > 0 ? 'open' : 'closed';
-        }
-      } else if (domain === 'water_heater') {
-        if (service === 'turn_on') e.state = a.operation_mode && a.operation_mode !== 'off' ? a.operation_mode : 'eco';
-        else if (service === 'turn_off') { off(); a.operation_mode = 'off'; }
-        if (service === 'set_temperature' && d.temperature != null) a.temperature = d.temperature;
-        if (service === 'set_operation_mode' && d.operation_mode) { a.operation_mode = d.operation_mode; e.state = d.operation_mode; }
-      } else if (domain === 'media_player') {
-        if (service === 'volume_set' && d.volume_level != null) a.volume_level = d.volume_level;
-        if (service === 'media_play') e.state = 'playing';
-        if (service === 'media_pause') e.state = 'paused';
-      }
-
-      this.emit('change', { entity_id: eid, state: e });
-      return Promise.resolve({ demo: true });
-    }
-
-    /* 场景 / 自动化：没有单实体 target，按名字批量改灯 */
-    if (domain === 'scene') {
-      const off = /away|sleep|night/.test(eid || '');
-      this.entities.forEach((s, id) => {
-        if (/^light\./.test(id)) { s.state = off ? 'off' : 'on'; }
-      });
-      this.emit('change', { demo: true, full: true });
-    } else if (domain === 'automation') {
-      this.entities.forEach((s, id) => {
-        if (/^light\.hall/.test(id)) s.state = s.state === 'on' ? 'off' : 'on';
-      });
-      this.emit('change', { demo: true });
-    }
-    return Promise.resolve({ demo: true });
-  },
+  /* ---------------- 演示模式（实现在 haDemo.js，薄委托保持方法签名不变） ---------------- */
+  startDemo() { return startDemo(this); },
+  stopDemo() { return stopDemo(this); },
 
   /* retrying 供 UI 区分「断线重连」与「首次连接」——展示页据此显示轻提示。
    * 其余字段保持原样，bridge.js 把整个对象写进 ha store。 */

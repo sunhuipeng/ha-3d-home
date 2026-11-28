@@ -21,6 +21,10 @@ import * as editor from './editor.js';
 import * as view3d from './view3d.js';
 import * as plugins from './plugins.js';
 import * as cards from './cards.js';
+/* 这两个模块此前不被聚合入口引用（lighting 由 useStageBoot / EditApp 直接 import、
+ * tvFocus 仅大屏页引）—— disposeEngine 聚合卸载需要它们的 dispose 导出。 */
+import * as lighting from './lighting.js';
+import * as tvFocus from './tvFocus.js';
 
 /* three 本体 + 两个常用扩展：只为了给 window 桥接供料，引擎内部一律用各自的 ESM import。
  * 动态插件是运行时注入的经典 <script>，作用域里没有 import，全靠 window.THREE
@@ -46,3 +50,15 @@ if (typeof window !== 'undefined') {
 
 /* hud.js 已删除：HUD 派生数据改由 composables/useHud.js 的 computed 提供，
  * 不再需要 window.HUD 全局；插件与外部脚本均不依赖这个符号。 */
+
+/* 引擎统一卸载出口（审计 3.7）：view3d/editor/lighting/tvFocus 四模块此前
+ * 「只有注册没有卸载」（键监听 / resize / HA change / 渲染 RAF / debug 定时器），
+ * MPA 页面级常驻无实害，HMR / 未来 SPA 化全变叠加泄漏。两页根组件的
+ * beforeUnmount 调用本函数；各模块内部保留业务状态，重新 init 即恢复。 */
+export function disposeEngine() {
+  try { editor.Editor && editor.Editor.dispose && editor.Editor.dispose(); } catch (e) { /* ignore */ }
+  try { view3d.View3D && view3d.View3D.dispose && view3d.View3D.dispose(); } catch (e) { /* ignore */ }
+  try { lighting.disposeLighting && lighting.disposeLighting(); } catch (e) { /* ignore */ }
+  try { tvFocus.disposeTvFocus && tvFocus.disposeTvFocus(); } catch (e) { /* ignore */ }
+  try { editor.disposeEditorKeys && editor.disposeEditorKeys(); } catch (e) { /* ignore */ }
+}

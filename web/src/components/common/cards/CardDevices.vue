@@ -44,9 +44,11 @@
 import CardGroup from './CardGroup.vue';
 import CardPowerToggle from './CardPowerToggle.vue';
 import { CARD_COMPONENTS, cardComponentOf } from './registry.js';
+import { cardRelay } from './cardMixins';
 
 export default {
   name: 'CardDevices',
+  mixins: [cardRelay],
   components: { CardGroup, CardPowerToggle, CardToggle: CARD_COMPONENTS.CardToggle },
   props: {
     /* CardEngine.buildListCard 产出的 blocks（grid / card 两种） */
@@ -56,7 +58,6 @@ export default {
   },
   emits: ['act'],
   methods: {
-    relay(node, value) { this.$emit('act', node, value); },
     comp(c) { return cardComponentOf(c); },
     isToggle(c) { return c.type === 'switch' || c.type === 'bool'; },
     /* 网格块内每位的占列（总 4 列）：

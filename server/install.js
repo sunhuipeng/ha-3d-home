@@ -37,6 +37,16 @@ module.exports = function installRoutes() {
     return json(res, 200, { key, keyTail: key.slice(-4) });
   }));
 
+  /* 收 zip → installPackage → 错误映射：两个安装入口的唯一主体（审计 2.3，
+   * 此前两处逐字重复，差异只有密钥校验与 requireId）。 */
+  const installZipHandler = (requireId) => wrap(async (req, res) => {
+    let zipBuf;
+    try { zipBuf = await readRawBody(req, INSTALL_MAX_BYTES); }
+    catch (e) { return json(res, e && e.status || 500, { error: errText(e) }); }
+    try { return json(res, 200, await installPackage(zipBuf, requireId)); }
+    catch (e) { return json(res, e.status || 500, { error: errText(e) }); }
+  });
+
   /* 远程安装：POST /api/plugins/install?id=<id>
    * 请求体 = studio 打的 zip 原始字节；头 X-Install-Key 校验；?id= 与 X-Plugin-Id 二选一。 */
   r.post('/plugins/install', wrap(async (req, res) => {
@@ -59,22 +69,11 @@ module.exports = function installRoutes() {
     if (!PLUGIN_ID_RE.test(id)) {
       return json(res, 400, { error: '插件 id 不合法：小写字母开头，字母/数字/_ . -，最长 64' });
     }
-
-    let zipBuf;
-    try { zipBuf = await readRawBody(req, INSTALL_MAX_BYTES); }
-    catch (e) { return json(res, e && e.status || 500, { error: errText(e) }); }
-    try { return json(res, 200, await installPackage(zipBuf, id)); }
-    catch (e) { return json(res, e.status || 500, { error: errText(e) }); }
+    return installZipHandler(id)(req, res);
   }));
 
   /* 编辑页「导入插件」：本站 UI 直接上传 zip，id 从包内清单读，无需密钥 */
-  r.post('/plugins/import', wrap(async (req, res) => {
-    let zipBuf;
-    try { zipBuf = await readRawBody(req, INSTALL_MAX_BYTES); }
-    catch (e) { return json(res, e && e.status || 500, { error: errText(e) }); }
-    try { return json(res, 200, await installPackage(zipBuf, null)); }
-    catch (e) { return json(res, e.status || 500, { error: errText(e) }); }
-  }));
+  r.post('/plugins/import', installZipHandler(null));
 
   /* 清理弹窗「卸载」：kind=plugin 删 custom/plugins/<dir>，kind=catalog 删 custom/models/<dir>。
    * 目录名白名单 + 父目录校验在 uninstallFrom 内完成；成功时同步清对应 API 快照。

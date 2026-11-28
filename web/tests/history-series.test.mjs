@@ -71,11 +71,17 @@ test('enumPoints：档位按首次出现顺序，连续同态压缩到首末', (
 
 test('seriesBounds：正常量程留 8% 余量；恒定值给 ±5%；0 值给 ±1', () => {
   const b = seriesBounds([{ t: 1, v: 10 }, { t: 2, v: 20 }]);
-  assert.ok(b.min < 10 && b.max > 20);
-  assert.ok(Math.abs((b.max - b.min) - (10 + 20 * 0.16)) < 1e-9 || b.span > 10);
+  /* 8% 余量口径精确锁定（2026-11-28：原恒真断言 `…< 1e-9 || b.span > 10` 拆开） */
+  assert.equal(b.rawMin, 10);
+  assert.equal(b.rawMax, 20);
+  assert.ok(Math.abs(b.min - 9.2) < 1e-9, 'min = 10 - 10*0.08，实际 ' + b.min);
+  assert.ok(Math.abs(b.max - 20.8) < 1e-9, 'max = 20 + 20*0.08，实际 ' + b.max);
 
   const flat = seriesBounds([{ t: 1, v: 20 }, { t: 2, v: 20 }]);
-  assert.ok(flat.min < 20 && flat.max > 20);
+  assert.equal(flat.rawMin, 20);
+  assert.equal(flat.rawMax, 20);
+  assert.ok(Math.abs(flat.min - 19) < 1e-9, '恒定值 min = 20 - 20*0.05，实际 ' + flat.min);
+  assert.ok(Math.abs(flat.max - 21) < 1e-9, '恒定值 max = 20 + 20*0.05，实际 ' + flat.max);
 
   const zero = seriesBounds([{ t: 1, v: 0 }, { t: 2, v: 0 }]);
   assert.deepEqual([zero.min, zero.max], [-1, 1]);

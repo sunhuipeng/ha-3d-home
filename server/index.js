@@ -11,18 +11,18 @@
  *   config.js     /api/config、/api/config/test（含 HA 连接测试）
  *   assets.js     /api/upload、/api/refimg、/api/catalog、/api/plugins
  *   install.js    /api/install/config*、/api/plugins/install、/api/plugins/import
- *   project.js    /api/project、/api/anchor、/api/house/size
+ *   project.js    /api/project、/api/house/size
  *
  * 接口级复刻的三条硬约束：
  *  1. 不挂 body parser，readBody / readRawBody 直接读原生流（zip 二进制不能被消费）。
- *  2. JSON 响应走 sendJSON（writeHead + JSON.stringify），不用 res.json。
+ *  2. JSON 响应走 shared.json（writeHead + JSON.stringify），不用 res.json。
  *  3. 静态资源走 serveStatic（三级缓存 / ETag / 304 / 404 纯文本 / 目录逃逸校验）。
  * 另关掉 x-powered-by，打开大小写敏感与严格路由，拦掉 HEAD / OPTIONS 的 Express 默认行为。
- * 所有响应都走裸 writeHead / sendJSON，不经过 Express 的 res.send，故无需设置 etag。
+ * 所有响应都走裸 writeHead / shared.json，不经过 Express 的 res.send，故无需设置 etag。
  */
 const express = require('express');
 const core = require('./shared');
-const { sendJSON, requestURL } = require('./shared');
+const { json, requestURL } = require('./shared');
 const { serveStatic } = require('./library');
 const auth = require('./auth');
 const haProxy = require('./ha-proxy');
@@ -78,11 +78,11 @@ function createApp() {
     return serveStatic(req, res, requestURL(req));
   });
 
-  /* 旧站 createServer 的 try/catch → sendJSON(e.status||500, {error}) */
+  /* 旧站 createServer 的 try/catch → json(e.status||500, {error}) */
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
     core.logErr('[ha-3d-home] 请求处理异常:', err && err.stack || err);
-    return sendJSON(res, err.status || 500, { error: core.errText(err) });
+    return json(res, err.status || 500, { error: core.errText(err) });
   });
 
   return app;

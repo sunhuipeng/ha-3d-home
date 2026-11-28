@@ -64,6 +64,7 @@
 import { mapState } from 'pinia';
 import { useEditorStore } from '../../../stores/editor';
 import { DEVICE_TYPES } from '../../../model/catalog.js';
+import { devNameOf } from '../../../services/devName.js';
 
 export default {
   name: 'DevOrderPanel',
@@ -90,7 +91,7 @@ export default {
           id: d.id,
           eid: d.entityId,
           icon: (DEVICE_TYPES[d.type] && DEVICE_TYPES[d.type].icon) || '⚙️',
-          name: this.devName(d),
+          name: devNameOf(d),
           room: roomName(d.roomId),
           hidden: d.hideCard === true,
         }));
@@ -109,16 +110,7 @@ export default {
     },
   },
   methods: {
-    /* 名称与 2D 标签 / 卡片口径一致：HA 已连上取 friendly_name；
-     * 未连上时退回实例名（动态家具才有），都没有就用实体 id */
-    devName(d) {
-      const HA = window.HA;
-      if (HA && HA.getState && HA.friendly && HA.getState(d.entityId)) {
-        return HA.friendly(d.entityId) || d.entityId;
-      }
-      const nm = window.itemDisplayName ? window.itemDisplayName('device', d) : '';
-      return nm || d.entityId;
-    },
+    /* 设备显示名统一走 services/devName.js 的 devNameOf（审计 2.16） */
     /* 点名字只做选中高亮，不切工具：排序时常要连续挪几次，切走会关掉浮层与面板 */
     pick(id) { this.$emit('select-device', id); },
     /* 每次 ↑↓ 只交换相邻两项：算出新的 id 顺序交给根组件一次写入 + 一条撤销 */

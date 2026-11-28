@@ -16,7 +16,7 @@
  * 按值类型选对应的读写函数：
  *   · 布尔（prefBool / prefSetBool，存 '1' / '0'）
  *   · 数值（prefInt / prefSetInt）
- *   · JSON 对象（prefGetJSON / prefSetJSON） */
+ */
 export const PREF_KEYS = {
   /* —— 布尔开关 —— */
   autoRotate: 'ha3d.autoRotate',       // 大屏：自动旋转
@@ -70,20 +70,3 @@ export function prefSetInt(key, value) {
 }
 
 /* 对象偏好（机位 / 锚点）：坏 JSON 按「没有记录」处理，由调用方走默认值 */
-export function prefGetJSON(key, def) {
-  const raw = prefGet(key, null);
-  if (raw == null) return def;
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    return def;   // 手改过的脏数据 / 上一版格式不兼容
-  }
-}
-
-export function prefSetJSON(key, value) {
-  try {
-    prefSet(key, JSON.stringify(value));
-  } catch (e) {
-    /* 循环引用 / 没有 toJSON 的对象：静默，偏好丢失不该影响功能 */
-  }
-}

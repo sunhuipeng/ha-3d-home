@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  devicesOf, allDevicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
+  allDevicesOf, scopeDevicesOf, countOn, roomTabsOf, displayItemsOf,
   statusTextOf, netClassOf, cardKeyOf, isAllOf, activeIdOf,
 } from '../src/model/displayDerived.js';
 import {
@@ -96,12 +96,6 @@ const itemFloor = {
   },
 };
 
-test('devicesOf：空楼层 / 有设备两种口径', () => {
-  assert.equal(devicesOf(null).length, 0);
-  assert.equal(devicesOf({ devices: [] }).length, 0);
-  assert.equal(devicesOf(floor).length, 3);
-});
-
 test('allDevicesOf：全家统计 = 所有楼层设备，切层不影响范围', () => {
   const f1 = { devices: [{ id: 'a', on: true }, { id: 'b', on: false }] };
   const f2 = { devices: [{ id: 'c', on: true }] };
@@ -132,7 +126,7 @@ test('scopeDevicesOf：五种选中态，且全屋恒返回新数组', () => {
 });
 
 test('countOn / roomTabsOf：插件 isOn 口径与角标', () => {
-  assert.equal(countOn(devicesOf(floor), isOn), 2);
+  assert.equal(countOn(floor.devices, isOn), 2);
   assert.equal(countOn([], isOn), 0);
   assert.deepEqual(roomTabsOf(floor, isOn), [
     { id: 'r1', name: '客厅', badge: 1 },

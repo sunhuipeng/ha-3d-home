@@ -88,6 +88,17 @@ let cur = null;        // 当前焦点元素
 let curZoneId = -1;    // 当前焦点所在区域；元素被重建销毁后据此回落，保住邻接关系
 let lastZones = [];    // 最近一次按键的区域快照（调试用）
 let inited = false;
+let _debugTimer = 0;   // debug 覆盖层的 setInterval 句柄（审计 3.7：dispose 成对清除）
+
+/** 监听器卸载出口（审计 3.7）：与 initTvFocus 成对；焦点状态随之复位。
+ * MPA 页面级常驻无实害，HMR / 未来 SPA 化会叠加 keydown/pointerdown 监听。 */
+export function disposeTvFocus() {
+  if (!inited || typeof document === 'undefined') return;
+  inited = false;
+  document.removeEventListener('keydown', onKeyDown);
+  document.removeEventListener('pointerdown', clear, true);
+  if (_debugTimer) { window.clearInterval(_debugTimer); _debugTimer = 0; }
+}
 
 /** TV 模式判定：app 壳内（存在 AppShell 原生桥）或桌面调试 ?tv=1 */
 function active() {
@@ -444,7 +455,8 @@ function updateDebugOverlay() {
 function startDebugOverlay() {
   if (typeof window === 'undefined' || !debugEnabled()) return;
   updateDebugOverlay();
-  window.setInterval(updateDebugOverlay, 600);
+  /* 审计 3.7：记录句柄，disposeTvFocus() 成对清除（此前 interval 永不停止） */
+  _debugTimer = window.setInterval(updateDebugOverlay, 600);
 }
 
 function onKeyDown(e) {

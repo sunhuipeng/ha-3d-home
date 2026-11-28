@@ -108,9 +108,10 @@ function applyTheme() {
   if (meta) meta.setAttribute('content', !editPage && S.night ? '#0a0a0a' : '#eef1f5');
 
   /* 池灯不渐变：切模式时让所有插件实例重跑一次 update()，把新 gain 写进点光源。
-   * kit.set() 每次 HA change 都会重写强度，所以系数必须放在它读得到的地方。 */
+   * kit.set() 每次 HA change 都会重写强度，所以系数必须放在它读得到的地方。
+   * 走引擎的 setter（审计 3.5：不再直写字段）。 */
   const preset = S.night ? LIGHT_PRESETS.night : LIGHT_PRESETS.day;
-  View3D.lightingGain = preset.lampGain * S.level;
+  View3D.setLightingGain(preset.lampGain * S.level);
   /* 默认背景「纯色 + 网格」的网格线跟着主题走：夜间压暗、白天原样（编辑页恒白天）。
    * 与 lightingGain 同在此处，覆盖首次加载 / 手动切夜间 / 跨标签同步三条路径。 */
   if (View3D.setGridNight) View3D.setGridNight(!editPage && S.night);
@@ -133,12 +134,15 @@ export function initLighting(project, floorIndex) {
   if (!S.attached) {
     S.attached = true;
     /* 首次全量快照直接到位（避免开场房间先暗一拍再淡入），之后的增量变化才渐变 */
-    if (HA && HA.on) HA.on('change', (ev) => refreshLighting(!!(ev && ev.full)));
+    /* 审计 3.7：监听器具名化，disposeLighting() 成对移除（此前只有注册） */
+    _onHAChange = (ev) => refreshLighting(!!(ev && ev.full));
+    if (HA && HA.on) HA.on('change', _onHAChange);
     /* 切层 / 撤销 / 改户型都会重建房间 mesh，按当前楼层重算一次亮度表 */
-    window.addEventListener('ha3d:rebuilt', () => refreshLighting(false));
+    _onRebuilt = () => refreshLighting(false);
+    window.addEventListener('ha3d:rebuilt', _onRebuilt);
     /* 两个 HTML 入口各自 createPinia，但同源 localStorage：另一页切夜间 / 亮度时这边跟着变。
        编辑页例外 —— 夜间恒 false，只跟随全局亮度微调。 */
-    window.addEventListener('storage', (ev) => {
+    _onStorage = (ev) => {
       if (!ev.key || ev.key === PREF_KEYS.nightMode || ev.key === PREF_KEYS.lightLevel) {
         const n = S.editPage ? false : prefBool(PREF_KEYS.nightMode, false);
         const l = Math.max(0.2, Math.min(1, prefInt(PREF_KEYS.lightLevel, 100) / 100));
@@ -148,9 +152,26 @@ export function initLighting(project, floorIndex) {
           refreshLighting(false);
         }
       }
-    });
+    };
+    window.addEventListener('storage', _onStorage);
   }
   refreshLighting(true);   // 首帧直接到位，不做淡入
+}
+
+/* 审计 3.7：具名监听句柄（模块级，disposeLighting() 成对移除） */
+let _onHAChange = null, _onRebuilt = null, _onStorage = null;
+
+/** 监听器卸载出口（审计 3.7）：与 initLighting 的 attached 分支成对；
+ * 亮度/夜间偏好等状态保留（重新 initLighting 即恢复）。 */
+export function disposeLighting() {
+  if (!S.attached) return;
+  S.attached = false;
+  if (_onHAChange && HA && HA.off) HA.off('change', _onHAChange);
+  _onHAChange = null;
+  if (_onRebuilt) window.removeEventListener('ha3d:rebuilt', _onRebuilt);
+  _onRebuilt = null;
+  if (_onStorage) window.removeEventListener('storage', _onStorage);
+  _onStorage = null;
 }
 
 /** 重算房间亮度并过渡；immediate=true 用于首帧。 */

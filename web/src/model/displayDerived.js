@@ -21,13 +21,9 @@ import { displayActionOf, domainMdiOf, MAX_DISPLAY_ITEMS } from './displayAction
 
 /* 当前楼层「全部设备」。两页原写法略有差异（PanelApp 带 || [] 兜底，
    DisplayApp 直接 .forEach），统一取带兜底的口径：正常数据下完全等价。 */
-export function devicesOf(fl) {
-  return (fl && fl.devices) || [];
-}
-
 /* 全家设备（顶栏统计分母）：所有楼层的 devices 依次展开成一个新数组。
    floors 为空 / 某层没有 devices 都按空处理；选层不影响分子分母，
-   切到任意楼层左上角都显示同一份全家统计。与 devicesOf 一样返回新数组，
+   切到任意楼层左上角都显示同一份全家统计。返回新数组，
    避免下游 computed 因引用不变而不重算。 */
 export function allDevicesOf(floors) {
   const out = [];

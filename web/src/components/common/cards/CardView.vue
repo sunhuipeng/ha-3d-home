@@ -39,9 +39,11 @@
 <script>
 import CardDevices from './CardDevices.vue';
 import CardPowerToggle from './CardPowerToggle.vue';
+import { cardRelay } from './cardMixins';
 
 export default {
   name: 'CardView',
+  mixins: [cardRelay],
   components: { CardDevices, CardPowerToggle },
   props: {
     node: { type: Object, required: true },
@@ -61,7 +63,7 @@ export default {
       return { emoji: i || '📦' };
     },
     /* 容器层已把「单元素平铺块」和「完整设备卡」排好序，这里只按顺序画 */
-    blocks() { return this.node.blocks || this.node._cards || []; },
+    blocks() { return this.node.blocks || []; },
     /* 单设备视图：整卡总标题右侧电源开关取唯一那张设备子卡（它带 _eid/_type/_style） */
     singleCard() {
       if (!this.node._single) return null;
@@ -73,9 +75,6 @@ export default {
       if (this.node._roomId) return '本房间暂无可控制的设备';
       return '本楼层暂无可控制的设备';
     },
-  },
-  methods: {
-    relay(node, value) { this.$emit('act', node, value); },
   },
 };
 </script>

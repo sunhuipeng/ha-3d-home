@@ -21,16 +21,29 @@ async function readJson(res, fallback) {
 
 /* 展示项 SVG 图标的二次净化：automation 提交时已有 validIcon 校验，这里再挡一道
  * （project.json 是本地可编辑文件，配置源不应被无条件信任）。只放行 svg 根元素，
- * 剥掉事件属性 / script / foreignObject / image / use / javascript:。 */
+ * 剥掉事件属性 / script / foreignObject / image / use / javascript:。
+ * 防绕过要点（2026-11-28 回归）：
+ *   · <script> / <foreignObject> 未闭合时剥到字符串末尾（不能只配对闭合标签）；
+ *   · 事件属性支持无引号值（onload=evil()）与空值（onerror=），并循环剥到收敛——
+ *     否则 onload="x"onerror=y 这类删完前一个才暴露的连写会漏；
+ *   · 净化后若仍残留 <script / on*=/javascript: 直接整体丢弃（纵深防御）。 */
+const EVENT_ATTR_RE = /\son[a-z]+\s*=\s*(?:"[\s\S]*?"|'[\s\S]*?'|[^\s>]+|(?=[\s>]|$))/gi;
 export function safeSvgHtml(svg) {
   if (typeof svg !== 'string' || svg.length > 12000) return '';
   if (!/^\s*<svg[\s>]/i.test(svg) || !/<\/svg>\s*$/i.test(svg)) return '';
-  return svg
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*(["']).*?\1/gi, '')
+  let out = svg
+    .replace(/<script\b[\s\S]*?(?:<\/script\s*>|$)/gi, '')
+    .replace(/<foreignObject\b[\s\S]*?(?:<\/foreignObject\s*>|$)/gi, '');
+  let prev;
+  do {
+    prev = out;
+    out = out.replace(EVENT_ATTR_RE, '');
+  } while (out !== prev);
+  out = out
     .replace(/javascript:/gi, '')
     .replace(/<(image|use)\b[^>]*>/gi, '');
+  if (/<script\b/i.test(out) || /\son[a-z]+\s*=/i.test(out) || /javascript:/i.test(out)) return '';
+  return out;
 }
 
 /* 编辑页候选：只读取 longRunning:false 的短脚本/场景（automation 侧过滤）。 */

@@ -60,17 +60,10 @@
         @set-card="setCard" @add-card="addCard" @remove-card="removeCard"
         @open-disp-cfg="openDispCfg" />
 
-      <!-- 分支六：选中对象的属性编辑（样式 / 参数 / 家具 / 3D 位置 / 绑定 / 点击控制） -->
-      <selection-inspector v-else-if="selItem"
-        @set-sel-style="setSelStyle" @set-sel-opt="setSelOpt" @swap-furn-model="swapFurnModel"
-        @set-furn-num="setFurnNum" @wheel-furn="wheelFurn"
-        @set-dev-num="setDevNum" @wheel-num="wheelNum"
-        @set-dev-label-offset="setDevLabelOffset" @commit-dev-label-offset="commitDevLabelOffset"
-        @wheel-dev-label-offset="wheelDevLabelOffset"
-        @set-prop="setProp" @set-dev-click="setDevClick" @set-dev-click-svc="setDevClickSvc"
-        @set-open-num="setOpenNum" @wheel-open="wheelOpen" @set-open-z="setOpenZ"
-        @wheel-open-z="wheelOpenZ" @clear-dev-field="clearDevField"
-        @del-selected="delSelected" @dirty="dirty()" />
+      <!-- 分支六：选中对象的属性编辑（样式 / 参数 / 家具 / 3D 位置 / 绑定 / 点击控制）。
+           动作经 :act props 打包下发（名单唯一出处 components/pages/editor/inspectorActs.js，
+           审计 2.18：原先 20 个 emits 通道 + 两侧行样板，新增输入框要同步改 4 处） -->
+      <selection-inspector v-else-if="selItem" :act="inspectorAct" />
     </aside>
   </div>
 
@@ -143,21 +136,43 @@
  *
  * 全局状态层（Pinia）：业务/编辑态在 stores/editor.js，浮层开关与 tooltip 在
  * stores/ui.js，二者都带 getters 与纯状态 Actions。根组件 data() 已清空，全靠
- * computed 的 mapWritableState / mapState 与 methods 的 mapActions 展开成同名属性，
- * 因此 58 处 this.project 与 85 个 methods 保持原样；engine 的 window.App 桥接由 bridge.js 承担。
+ * computed 的 mapWritableState / mapState 与 methods 的 mapActions 展开成同名属性；
+ * engine 的 window.App 桥接由 bridge.js 承担。
  * 引擎对象仍走 window 桥接，不进 store（Proxy 会破坏 THREE.Object3D）。
+ *
+ * 结构重构（2026-11-28 第二轮）：属性编辑 / 参考底图 / 背景插件 / 房间与设备排序 /
+ * 键盘绑定六个职责方法组拆到 composables/（见 import 处说明），本组件只留
+ * init / 撤销栈 / 楼层 / 视图切换 / setTool / 引擎事件编排等生命周期强耦合部分。
  */
 import { mapState, mapWritableState, mapActions } from 'pinia';
-import { toRaw } from 'vue';
-import { PREF_KEYS, prefSetBool } from './services/prefs';
+import { PREF_KEYS } from './services/prefs';
 import { APP_NAME, APP_VERSION } from './version';
 /* 3D 拾取 → 选中 → 卡片：与 index 大屏共用同一套判定（model/pick.js） */
-import { selOfPick, applySceneMode as syncSceneMode, applyPickHi } from './model/pick';
-import { devTypeOf, FLOOR_LIST_KEYS, DEFAULT_FLOOR_H, newFloor, cloneFloor } from './model/catalog';
+import { selOfPick, applyPickHi } from './model/pick';
+import { useSceneMode } from './composables/useSceneMode';
 import { useEditorStore } from './stores/editor';
 import { useUiStore } from './stores/ui';
 import { useHaStore } from './stores/ha';
 import { useCatalogStore } from './stores/catalog';
+/* 结构重构（2026-11-28 第二轮）：原根组件的方法组按职责拆到 composables/ 下，
+ * 以「方法组对象」形态导出，在此摊进 methods —— Vue 把每个 method 绑定到组件
+ * 实例，`this` 语义与原地内联完全一致，纯搬运零行为变化：
+ *   useNumEditing  属性编辑家族（setProp + 数值底座 + 标签抬升）
+ *   useRefImage    参考底图（/api/refimg 全项目一张）
+ *   useBackground  背景插件（applyBg / bindBgSettings / setBgOpt / setBgField / setBackground）
+ *   useRooms       房间属性与排序
+ *   useDeviceOrder 设备排序与卡片隐藏标记
+ *   useEditorKeys  全局键盘绑定（bindKeys）
+ * init / 撤销栈 / 楼层 / 视图切换 / setTool 等与引擎生命周期强耦合的编排仍留在本组件。 */
+import { numEditingMethods } from './composables/useNumEditing';
+import { refImageMethods } from './composables/useRefImage';
+import { backgroundMethods } from './composables/useBackground';
+import { roomMethods } from './composables/useRooms';
+import { deviceOrderMethods } from './composables/useDeviceOrder';
+import { editorKeysMethods } from './composables/useEditorKeys';
+import { floorMethods } from './composables/useFloors';
+import { INSPECTOR_ACTS } from './components/pages/editor/inspectorActs';
+import { disposeEngine } from './engine';
 import BootOverlay from './components/common/BootOverlay.vue';
 import { bootDone, armBootFallback } from './components/common/boot.js';
 import BgPanel from './components/pages/editor/BgPanel.vue';
@@ -178,10 +193,6 @@ import RoomsPanel from './components/pages/editor/RoomsPanel.vue';
 import DevOrderPanel from './components/pages/editor/DevOrderPanel.vue';
 import CanvasStage from './components/pages/editor/CanvasStage.vue';
 import { initLighting } from './engine/lighting.js';
-
-/* 「纯位姿」字段：3D 里改这些只需要挪一下 group，不必整树重建（见 setProp / View3D.moveItem）。
- * 不含 w/d/h 等几何尺寸（那是模型/目录形态，必须重建）。 */
-const POSE_KEYS = ['x', 'y', 'z', 'rot', 'pct'];
 
 export default {
   name: 'EditApp',
@@ -225,21 +236,20 @@ export default {
     ...mapState(useUiStore, ['tooltipMsg', 'tooltipShow', 'tooltipStyle']),
     ...mapState(useEditorStore, [
       'cur', 'bgStyle', 'selItem', 'kindName', 'canUndo', 'canRedo',
+      /* 标签抬升高度：store getter（共享纯函数实现，审计 2.13/3.15 —— EditApp
+       * 与 SelectionInspector 共用同一份，本组件不再自带 computed） */
+      'labelOffsetDefault', 'labelOffsetVal',
     ]),
     ...mapState(useHaStore, ['connClass', 'connText']),
-    /* 标签抬升高度的造型默认值（styles[].labelOffset，缺省 0.3m） */
-    labelOffsetDefault() {
-      const it = this.selItem;
-      const k = this.selection && this.selection.kind;
-      if (!it) return 0.3;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return 0.3;
-      const type = k === 'device' ? devTypeOf(it) : k;
-      return window.PluginEngine ? PluginEngine.labelOffset(type, it.style) : 0.3;
-    },
-    /* 面板显示值：实例覆盖 obj.labelOffset 优先，没设过就显示造型默认值 */
-    labelOffsetVal() {
-      const it = this.selItem;
-      return it && it.labelOffset != null ? it.labelOffset : this.labelOffsetDefault;
+    /* SelectionInspector 的动作打包（inspectorActs.js 名单契约，审计 2.18）：
+     * 按名单把同名编排方法收进一个对象经 :act props 下发。数值家族落点在
+     * composables/useNumEditing.js 方法组，其余在根组件 methods；Vue 的 options
+     * methods 已自动绑定实例，直接引用即可。名单里的方法缺一会在运行时报
+     * this[n] is not a function —— 新增/改名时名单与方法必须同步。 */
+    inspectorAct() {
+      const o = {};
+      INSPECTOR_ACTS.forEach((n) => { o[n] = this[n]; });
+      return o;
     },
     /* 有任何弹窗开着（连接 / 导入 / 展示项 / 重置确认）→ 顶栏的单键快捷键一律不抢：
      * 否则在连接弹窗里敲字母（虽然输入框已过滤，但焦点可能在按钮/空白处）会顺手切视图。 */
@@ -269,6 +279,16 @@ export default {
      * 好让下面的同名方法叠加 toast —— 对象写法只生成别名，不会再生成原名。 */
     ...mapActions(useEditorStore, { toggleCardsState: 'toggleCards' }),
 
+    /* ------- 职责方法组（composables/ 拆分，见文件头 import 处说明） ------- */
+    ...numEditingMethods,   // setProp / 数值底座 / 设备·门窗·家具数值 / 标签抬升
+    ...refImageMethods,     // 参考底图（applyBgImage / syncBg / toggleBg / onBgScale / clearBg / writeBg）
+    ...backgroundMethods,   // 背景插件（applyBg / bindBgSettings / setBgOpt / setBgField / setBackground）
+    ...roomMethods,         // 房间属性与排序（setRoomProp / reorderRooms / _applyRoomOrder / selectRoom）
+    ...deviceOrderMethods,  // 设备排序与卡片隐藏（reorderDevices / toggleDeviceCardHide / … / locateDevice）
+    ...editorKeysMethods,   // 全局键盘绑定（bindKeys）
+    ...floorMethods,        // 楼层（setFloor / selectFloor / addFloor / copyFloor / delFloor / 属性 / 重置）
+    ...useSceneMode.methods, // 场景模式装配共享底座（toggleLabelsCore / applySceneCore / pickHi / refresh3dQuiet）
+
     /* 设备页签的横向滚动 / 两端渐隐 / 列表复位 → components/pages/editor/DevPanel.vue */
 
     /* ------- 初始化 ------- */
@@ -296,7 +316,8 @@ export default {
         this.applyBg();   // 恢复项目里保存的背景插件地面（空则默认纯色 + 网格）
 
         // 关闭页面前确保已保存
-        window.addEventListener('beforeunload', () => {
+        /* 句柄存实例（审计 4-应用.4）：beforeUnmount 成对移除 */
+        this._onBeforeUnload = () => {
           if (this.savedState !== '已保存' && this.project) {
             /* 与手动保存 / autoSave 走同一份 serializeProject 快照：原始 this.project
              * 可能带着过期的运行期字段，整份提交会干扰服务端。
@@ -310,7 +331,8 @@ export default {
               body: JSON.stringify(serializeProject(this.project)),
             }).catch(() => { /* 离页保存失败已无 UI 可提示 */ });
           }
-        });
+        };
+        window.addEventListener('beforeunload', this._onBeforeUnload);
 
         View3D.startLoop();
         /* 光照控制器：房间 mesh 已建、插件实例已生成。编辑页不走 useStageBoot，
@@ -381,7 +403,7 @@ export default {
       this._saveTimer = setTimeout(() => this.autoSave(), 1000);
     },
 
-    /* ------- 撤销 / 重做（快照式，见 js/recode.js） -------
+    /* ------- 撤销 / 重做（快照式，见 web/src/engine/recode.js） -------
      * canUndo / canRedo 已变成 editor store 的共享 getters（顶栏直接 mapState 读），
      * 不必再把方法结果当 props 传下去。 */
     undo() {
@@ -428,91 +450,14 @@ export default {
       } catch (e) { /* 下次编辑会重试 */ }
     },
 
-    /* ------- 楼层 ------- */
-    /* fit=false: 只重指向楼层 + 联动刷新，不用重新适配视野（撤销恢复走这条路，避免画面跳动） */
-    setFloor(fit) {
-      Editor.floor = this.cur;
-      Editor.roomPts = null;   // 切层丢弃未落定的房间：那一串点属于上一层的坐标系
-      Editor.clearMeasures();  // 标线同理：坐标是某一层的，换层就整批清掉（不落盘、不压撤销）
-      if (fit === false) Editor.render(); else Editor.fit();
-      this.setZoomFromPpm(Editor.ppm);
-      this.syncBg();
-      this.updateHouseSize();
-    },
-    /* noView=true: 不记录切层这个「视图动作」（新建/删除楼层自己会压一条数据快照，
-     * 再插一条视图快照会让撤销要按两次） */
-    selectFloor(i, noView) {
-      this.floorIdx = i;
-      Editor.select(null);   // 切层清选中（App 与 Editor 两边由 select 内部同步）
-      this.setFloor();
-      if (!noView) this.viewDirty();   // 切层 = fit 重新取景，算一次视图变化（撤销能回到原来那层的取景）
-      /* 切层必须让 3D 场景（含背景插件构图）一起换层：背景 group 是按当前楼层的
-       * 房屋包围盒摆位的，只在 3D 模式 rebuild 会让「2D 下切层」时背景停留在上一层
-       * 的落点，之后切回 3D 前房屋与平台就是错开的。切层是低频操作，隐藏容器里
-       * 多建一次 3D 模型可以接受；进 3D 时 setMode 会再 resize + rebuild 一次。 */
-      View3D.rebuild(this.project, i);
-    },
-    addFloor() {
-      this.project.floors.push(newFloor((this.project.floors.length + 1) + '层'));
-      this.selectFloor(this.project.floors.length - 1, true);
-      this.dirty();
-    },
-    /* 复制本层：墙体/房间/门窗/家具/设备/展示配置全量深拷贝（元素换新 id、房间引用
-       与展示项 eid 按映射改写，HA 实体绑定原样保留），插入到本层之后并切过去 */
-    copyFloor() {
-      const src = this.cur;
-      if (!src) return;
-      const fl = cloneFloor(src, (src.name || '层') + ' 副本');
-      this.project.floors.splice(this.floorIdx + 1, 0, fl);
-      this.selectFloor(this.floorIdx + 1, true);
-      this.dirty();
-    },
-    delFloor() {
-      if (this.project.floors.length <= 1) return;
-      this.project.floors.splice(this.floorIdx, 1);
-      this.selectFloor(0, true);
-      this.dirty();
-    },
+    /* ------- 楼层 -------
+     * setFloor / selectFloor / addFloor / copyFloor / delFloor / setFloorName /
+     * setWallOpacity / setFloorHeight / confirmResetFloor 已拆到
+     * composables/useFloors.js（文件头 import 处摊进 methods）。
+     * openResetFloor（浮层开关）与 setProjectName（项目级）留在本组件。 */
     setProjectName(v) { this.project.name = v.trim() || '我的家'; this.dirty(); },
-    /* 楼层改名：与项目名同一条链路 —— 直写响应式对象后 dirty()（落盘 + 压撤销栈）。
-       之前模板里 cur.name 直写绕过了 dirty()，刷新即丢、Ctrl+Z 无效。 */
-    setFloorName(v) {
-      const fl = this.cur;
-      if (!fl) return;
-      fl.name = String(v).trim() || '楼层';
-      this.dirty();
-    },
 
-    /* 墙面不透明度(%)：按楼层记忆，拖动实时刷新 3D */
-    setWallOpacity(v) {
-      const fl = this.cur;
-      if (!fl) return;
-      if (isNaN(v)) return;
-      fl.wallOpacity = Math.min(100, Math.max(0, Math.round(v)));
-      this.commit();
-    },
-
-    /* 层高(m)：实时预览。input（打字/点步进箭头）防抖 120ms 后重建 3D，change（失焦/回车）
-     * 立即收口并钳制到 2~6。打字途中不钳制——0.5 会被 2~6 夹成 2 反写回输入框，打断输入。
-     * 2D 平面不画层高，redraw2d 省掉；高度只影响 3D，由 commit 的 rebuild3D 刷新（wallH 在
-     * View3D.build 里读 fl.height）。 */
-    setFloorHeight(v, phase) {
-      const fl = this.cur;
-      if (!fl) return;
-      const h = parseFloat(v);
-      if (isNaN(h)) {
-        if (phase === 'change') { fl.height = DEFAULT_FLOOR_H; this.commit({ redraw2d: false }); }   // 清空/乱输，失焦兜底回默认
-        return;   // 输入中途（如「3.」）不更新，等下一个字符或失焦
-      }
-      clearTimeout(this._fhTimer);
-      if (phase === 'change') {
-        fl.height = Math.min(6, Math.max(2, h));
-        this.commit({ redraw2d: false });
-        return;
-      }
-      fl.height = h;
-      this._fhTimer = setTimeout(() => this.commit({ redraw2d: false }), 120);
-    },
+    /* 本层户型长宽徽标的刷新（updateHouseSize）留在根组件：撤销恢复路径也调它 */
 
     /* ------- 数据卡（按楼层独立，动态数量，实体搜索输入） ------- */
     setCard(i, v) {
@@ -533,20 +478,9 @@ export default {
     setWeather(v) { this.project.settings.weatherEntity = String(v || '').trim(); this.dirty(); },
 
     /* ------- 重置当前楼层 -------
-     * 「输入确认」的校验随输入框一起收进 ResetModal（按钮 disabled + Enter 都要过 ok），
-     * 这里只负责真正清空楼层、清选中、压栈与提示。 */
+     * 确认弹窗交互在 ResetModal；confirmResetFloor（真正清空 + 压栈）已拆到
+     * composables/useFloors.js（文件头 import 处摊进 methods）。 */
     openResetFloor() { this.openFlyout('reset'); },
-    confirmResetFloor() {
-      if (!this.cur) return;
-      const fl = this.cur;
-      FLOOR_LIST_KEYS.forEach((k) => { fl[k] = []; });
-      Editor.select(null);   // 清选中（App 与 Editor 两边同步）
-      Editor.wallStart = null;
-      Editor.ghost = null;
-      this.closeFlyout('reset');
-      this.commit();
-      this.toast('已重置「' + fl.name + '」（自动保存）');
-    },
 
     /* ------- 展示大屏展示项配置 -------
      * 场景勾选 → components/pages/editor/DispCfgModal.vue；根组件只管开关。 */
@@ -606,217 +540,38 @@ export default {
      * 家具库卡片左上角的「插件」标记就是靠 f.plugin 区分的。 */
     pickFurniture(f) {
       Editor.ghost = { kind: f.plugin ? 'furn-plugin' : 'furniture', data: Object.assign({}, f) };
+      /* 工具双真相同步点（审计 3.14）：store.tool（工具栏高亮）与 Editor.tool（引擎
+       * 画布行为）必须一次写完 —— 此前只写引擎侧，左侧「家具」按钮会漏亮。
+       * 不走 setTool()：那里的「再次点击同一浮层工具 → 收起」toggle 语义会把
+       * 已激活工具翻回 select，与浮层内选型的意图相反。 */
+      this.tool = 'furniture';
       Editor.tool = 'furniture';
       this.toast('在户型图上点击放置: ' + f.name);
     },
 
-    /* ------- 背景（背景插件：统一返回 3D group，扁平或立体；静态或动态） ------- */
-    applyBg() {
-      if (!window.PluginEngine || !View3D.scene) return;
-      this.bindBgSettings();
-      /* 显式重放的三个前置动作（缺一个都会让背景与房屋错位）：
-       * 1) init 时 View3D 还没 build 过，houseBounds() 返回 null，插件会按默认
-       *    8×8 原点构图 —— 这里先把 project / house 对准当前楼层；
-       * 2) 取消同层拖墙挂起的 160ms 重放，避免和本次显式重放并发双重建销 group；
-       * 3) 成功后提交构图指纹，下一次 build 才不会误判「构图变了」再画一遍；
-       *    失败不提交，留旧 key 让 build 自动重试。 */
-      View3D.cancelBgReplay();
-      View3D.ensureHouse(this.project, this.floorIdx);
-      if (PluginEngine.applyBackground(this.bgStyle, View3D) === true) View3D.syncBgKey();
-    },
-    /* 把项目里的背景参数 / 实体绑定对象直接交给引擎（同一引用：面板改值 → 项目数据同步变 → 自动保存） */
-    bindBgSettings() {
-      if (!window.PluginEngine || !this.project) return;
-      const s = this.project.settings || (this.project.settings = {});
-      /* 老存档的实体绑定按样式存，这里就地合并成插件级一份（幂等），
-       * 保证后续自动保存写进 data/project.json 的也是同一把 key。 */
-      if (PluginEngine.migrateProjectBg) PluginEngine.migrateProjectBg(s);
-      if (!s.backgroundOptions) s.backgroundOptions = {};
-      if (!s.backgroundFields) s.backgroundFields = {};
-      /* toRaw 剥掉响应式代理再交给引擎（「reactive 不进引擎」的家规）：
-       * 编辑页是 bgOptions 的**写入方**，引擎改的是同一个 raw 目标 —— 自动保存
-       * 序列化走 proxy 读同一份值，UI 重算由 bgTick 驱动，行为不变；
-       * 但引擎拿到的不再是深层 Proxy，不会把 Vue 依赖收集拖进引擎热路径。 */
-      PluginEngine.bgOptions = toRaw(s.backgroundOptions);
-      PluginEngine.bgFields = toRaw(s.backgroundFields);
-      /* bgOptions / bgFields 是挂在引擎上的普通对象（非 Vue 响应式）。首次初始化时
-       * 面板可能已经先算过一次空值并缓存，这里用 bgTick 让依赖它们的计算属性
-       * （批次 3 后位于 components/pages/editor/BackdropPanel.vue，通过 mapState 读
-       * 全局 store 的 bgTick）在引用接好之后重算一次，避免刷新后显示旧值。 */
-      this.bumpBg();
-    },
-    /* 改背景参数: 只重绘地面（不重建户型），即时生效并自动保存。
-     * 重绘做 90ms 防抖——自绘类背景（1024 贴图 + 撒点）不能让滑块的每个 input 都跑一遍 */
-    setBgOpt(key, val) {
-      if (!this.bgStyle || !window.PluginEngine) return;
-      this.bindBgSettings();
-      const store = PluginEngine.bgOptions;
-      const cur = store[this.bgStyle] || (store[this.bgStyle] = {});
-      cur[key] = val;
-      this.bumpBg();
-      clearTimeout(this._bgOptTimer);
-      this._bgOptTimer = setTimeout(() => this.applyBg(), 90);
-      this.dirty();
-    },
-    /* 改背景的实体绑定：绑定只影响数据，不重建几何，所以只推一次 onData。
-     * 值存 settings.backgroundFields['<插件id>'][key] —— 该插件所有样式共用，
-     * 切样式不会丢；换回未绑定时删掉该键。 */
-    setBgField(key, val) {
-      if (!this.bgStyle || !window.PluginEngine || !key) return;
-      this.bindBgSettings();
-      const store = PluginEngine.bgFields;
-      const pk = PluginEngine.bgFieldKey(this.bgStyle);
-      const cur = store[pk] || (store[pk] = {});
-      const eid = String(val || '').trim();
-      if (eid) cur[key] = eid; else delete cur[key];
-      this.bumpBg();
-      this.dirty();
-      PluginEngine.notifyBackgroundData(true);
-    },
-    setBackground(b) {
-      if (!this.project) return;
-      if (!this.project.settings) this.project.settings = newSettings();
-      this.project.settings.background = b ? b.id : '';
-      this.applyBg();
-      this.dirty();   // 自动保存到 data/project.json
-      this.toast(b ? ('背景已切换: ' + b.name) : '已恢复默认背景（纯色 + 网格）');
-    },
+    /* ------- 背景（背景插件） -------
+     * applyBg / bindBgSettings / setBgOpt / setBgField / setBackground 已拆到
+     * composables/useBackground.js（文件头 import 处摊进 methods）。
+     * 注入策略与 useStageBoot 的差异（审计 2.10 已知项）：编辑页走 toRaw 直接引用，
+     * 展示页走深拷贝隔离 —— 本轮只搬运不改行为。 */
     pickEntity(e) {
       Editor.ghost = { kind: 'device', data: { entityId: e.eid, name: e.name, type: e.type } };
+      /* 工具双真相同步点（审计 3.14，同 pickFurniture 口径）：store 与引擎一次写完 */
+      this.tool = 'device';
       Editor.tool = 'device';
       this.closeFlyout('dev');
       this.toast('在户型图上点击放置: ' + e.name);
     },
-    /* 房间属性（名称 / 地面颜色 / 温湿度实体绑定）。房间走 commit() 统一收口：重绘 2D
-     * + 压一条撤销 + 触发保存；3D 模式下顺带 rebuild，让地面分区/标签跟着刷新。
-     * 这些都是低频改动，不需要像拖拽那样做 160ms 防抖。
-     * 温湿度实体：EntityInput 每次输入都 emit（边打边搜），这里统一去空格 + 限长；
-     * 空串直接删字段，避免存档里留一堆空键。绑定变化要重建 3D 标签（rebuild 会 syncLabels）。 */
-    setRoomProp(key, value) {
-      const it = this.selItem;
-      if (!it || !this.selection || this.selection.kind !== 'room') return;
-      if (key === 'name') it.name = String(value == null ? '' : value).slice(0, 20) || '房间';
-      else if (key === 'color') it.color = String(value || '');
-      else if (key === 'tempEntity' || key === 'humidityEntity') {
-        const eid = String(value == null ? '' : value).trim().slice(0, 160);
-        if (eid) it[key] = eid;
-        else delete it[key];
-      } else return;
-      this.commit();
-    },
+    /* 房间属性与排序（setRoomProp / reorderRooms / _applyRoomOrder / selectRoom）
+     * 已拆到 composables/useRooms.js（文件头 import 处摊进 methods）。 */
     delSelected() { Editor.deleteSelection(); },
 
-    /* ------- 房间排序（RoomsPanel）-------
-     * 顺序的真相就是**数组顺序**：fl.rooms → 房间 tab、
-     * 「全屋」卡片分组。消费端全部直接 v-for（PanelApp.vue / useCards.js），
-     * 无需新增 order 字段（roomOut 是白名单序列化，新字段会被静默丢弃）。
-     * 设备顺序不在这里排（2026-11-14）：设备排序走 DevOrderPanel / reorderDevices，
-     * 顺序即卡片权重（卡片跟着设备走）；RoomsPanel 里的设备列表只读展示。
-     *
-     * 两个关键约束：
-     *  1) 必须**原地按索引覆写**，不能替换数组引用 —— Editor.floor = this.cur 持有
-     *     旧数组，替换后 2D 绘制 / 拾取看到的还是旧顺序；
-     *  2) 组件只产出「新的 id 顺序」，写入 / 撤销栈 / 重绘 / 保存在这里一次做完。 */
-    reorderRooms(payload) {
-      const fl = this.cur;
-      const p = payload || {};
-      if (!fl || !Array.isArray(p.ids)) return;
-      if (!this._applyRoomOrder(fl, p.ids)) return;
-      /* 一次 ↑↓ 点击 = 一条撤销：label 带本次顺序，避免 Recode 600ms 同 label 合并把
-         连续几次排序吞成一步。changed() 顺带完成 2D 重绘 + 自动保存。 */
-      const label = 'room-order:rooms:' + p.ids.join(',');
-      Editor.changed(false, label);
-      this.rebuild3D();   // 3D 模式下房间绘制层次 / 标签跟着换（2D 模式内部直接返回）
-    },
-    _applyRoomOrder(fl, ids) {
-      const arr = fl.rooms || [];
-      if (ids.length !== arr.length) return false;
-      const byId = new Map(arr.map((r) => [r.id, r]));
-      const next = ids.map((id) => byId.get(id));
-      if (next.some((r) => !r) || new Set(next).size !== next.length) return false;
-      if (next.every((r, i) => r === arr[i])) return false;   // 没变就不压撤销
-      next.forEach((r, i) => { arr[i] = r; });
-      return true;
-    },
-    /* 列表点房间名 → 走引擎的 select（经 window.App.setSelection 同步 Pinia + 画布高亮），
-       不能直接写 store.selection，否则 2D/3D 的选中高亮不会跟着走 */
-    selectRoom(id) {
-      if (!id) return;
-      Editor.select('room', id);
-      Editor.render();
-    },
-
-    /* ------- 设备排序（DevOrderPanel）-------
-     * 权重 = **fl.devices 的数组顺序**，卡片是跟着设备走的：
-     * useCards 全屋分支直接遍历 fl.devices 建卡，CardEngine.buildListCard 再把
-     * 「单元素卡（solo 聚合成一组）」与「多控件卡片」分开排，两类内部都按这个顺序。
-     * 所以这里只改数组，不新增 order 字段（devOut 是白名单序列化，新字段会被静默丢弃）。
-     *
-     * 约束与房间排序同一套：原地按槽位覆写（不替换数组引用，否则 2D 绘制 / 拾取
-     * 还看旧顺序）；面板只产出新的 id 顺序，撤销栈 / 重绘 / 保存在这里一次做完。
-     * 与房间排序不同：设备顺序不影响 3D 几何，**不需要 rebuild3D**。 */
-    reorderDevices(payload) {
-      const fl = this.cur;
-      const p = payload || {};
-      if (!fl || !Array.isArray(p.ids)) return;
-      if (!this._applyDeviceOrder(fl, p.ids)) return;
-      /* label 带本次顺序：避免 Recode 600ms 同 label 合并把连续几次排序吞成一步 */
-      Editor.changed(false, 'device-order:' + p.ids.join(','));
-    },
-    /* 只重排「可排序设备」占的槽位：家具实例与未绑实体的设备位置一字不动
-     * （它们不出卡，顺序对展示没有意义，没必要跟着挪） */
-    _applyDeviceOrder(fl, ids) {
-      const arr = fl.devices || [];
-      const sortable = (d) => !!d && !!d.entityId && d.type !== 'furniture';
-      const slots = [];
-      const byId = new Map();
-      arr.forEach((d, i) => { if (sortable(d)) { slots.push(i); byId.set(d.id, d); } });
-      if (slots.length !== ids.length) return false;   // 面板与数据不同步 → 放弃这次排序
-      const next = ids.map((id) => byId.get(id));
-      if (next.some((d) => !d) || new Set(next).size !== next.length) return false;
-      if (next.every((d, k) => d === arr[slots[k]])) return false;   // 没变就不压撤销
-      slots.forEach((idx, k) => { arr[idx] = next[k]; });
-      return true;
-    },
-    /* ------- 卡片隐藏标记（DevOrderPanel 的「隐藏 / 显示」）-------
-     * 语义：**不是隐藏设备本身**。设备对象照旧在 fl.devices 里，2D 绘制 / 3D 模型 /
-     * 标签 / 点击全部不变；只在设备上写一个布尔 hideCard，建卡层（useCards 的
-     * 全屋与房间分支）把它过滤掉 —— 卡片里不再出现这台设备的插片。
-     * 单设备选中态照常出卡（显式点中 = 想看它），统计数字也仍按全部设备算。
-     * 写入同 reorderDevices：改完一次 Editor.changed 压一条撤销 + 自动保存。 */
-    toggleDeviceCardHide(id) {
-      const fl = this.cur;
-      const d = ((fl && fl.devices) || []).find((x) => x && x.id === id);
-      if (!d) return;
-      if (d.hideCard === true) delete d.hideCard;   // 显示：删掉标记，回到「未设置」
-      else d.hideCard = true;
-      /* label 带设备 id：连续隐藏多台不会被 600ms 同 label 合并成一条撤销 */
-      Editor.changed(false, 'device-hide:' + id);
-    },
-    /* 一次恢复全部：只对真正隐藏过的设备动手，没有可改的就不压撤销 */
-    showAllDeviceCards() {
-      const fl = this.cur;
-      const arr = (fl && fl.devices) || [];
-      let n = 0;
-      arr.forEach((d) => { if (d && d.hideCard === true) { delete d.hideCard; n++; } });
-      if (!n) return;
-      Editor.changed(false, 'device-hide:all');
-    },
-    /* 面板里点设备名：只做选中 + 画布 / 3D 高亮，不切工具 ——
-       排序时常连续挪几次，切走会关掉设备浮层与排序面板 */
-    selectDevice(id) {
-      if (!id) return;
-      Editor.select('device', id);
-      Editor.render();
-    },
-    locateDevice(p) {
-      if (p.fi !== this.floorIdx) this.selectFloor(p.fi);
-      Editor.select(p.d.kindName || 'device', p.d.id);
-      Editor.fit();
-      this.setZoomFromPpm(Editor.ppm);
-      this.viewDirty();   // 定位后取景变了，记一条视图快照（撤销能回到定位前）
-    },
-    /* 设备图标 typeIcon → components/pages/editor/DevPanel.vue */
+    /* ------- 房间排序（RoomsPanel）与设备排序（DevOrderPanel） -------
+     * reorderRooms / _applyRoomOrder / selectRoom → composables/useRooms.js；
+     * reorderDevices / _applyDeviceOrder / toggleDeviceCardHide / showAllDeviceCards /
+     * selectDevice / locateDevice → composables/useDeviceOrder.js
+     * （两组均在文件头 import 处摊进 methods）。
+     * 设备图标 typeIcon → components/pages/editor/DevPanel.vue */
 
     /* ------- 视图 ------- */
     setMode(m) {
@@ -835,13 +590,13 @@ export default {
       });
     },
     toggleLabels() {
-      this.showLabels = !this.showLabels;
-      prefSetBool(PREF_KEYS.showLabels, this.showLabels);   // 编辑页偏好（展示页独立用 panelShowLabels）
-      /* 标签显隐 ⇔ 点击语义，必须一起切（见 model/pick.js 的 applySceneMode） */
-      this.applySceneMode();
-      this.toast(this.showLabels
-        ? '已显示设备标签：点标签执行，点设备查看卡片'
-        : '已隐藏设备标签：点设备执行动作');
+      /* 标签开关骨架（翻转/持久化/重拨顺序单一出处，审计 2.17）：
+       * 编辑页偏好键 showLabels（展示页独立用 panelShowLabels） */
+      this.toggleLabelsCore(PREF_KEYS.showLabels,
+        () => this.applySceneMode(),
+        () => this.toast(this.showLabels
+          ? '已显示设备标签：点标签执行，点设备查看卡片'
+          : '已隐藏设备标签：点设备执行动作'));
     },
     /* 卡片预览浮层开关：翻转走 store 的 toggleCards（别名 toggleCardsState），
      * toast 留在这里 —— 与 toggleLabels 同款，纯 UI 反馈不进 store。
@@ -852,16 +607,14 @@ export default {
       this.toast(this.showCards ? '已显示卡片预览' : '已隐藏卡片预览');
     },
 
-    /* ------- 3D 场景模式（与 PanelApp 完全同一套判定） -------
+    /* ------- 3D 场景模式（与 PanelApp 共用 composables/useSceneMode.js 底座） -------
      * 3D 且显示标签：点设备模型只「选中 / 切换卡片」（Editor.select 同步右侧属性栏与
      *   卡片预览），执行动作只走设备标签（标签是 DOM，不冒泡到 canvas）；
      * 隐藏标签 / 2D 模式：没有可点的标签，点设备模型直接 toggleDevice 执行动作。
      * 标签显隐与 onPick 由 syncSceneMode 一次拨完，避免两个开关各写一半。 */
     applySceneMode() {
-      if (!View3D || !View3D.init) return;
       const labels = this.mode === '3d' && this.showLabels;
-      syncSceneMode(View3D, labels, (hit) => this.onPick3D(hit));
-      applyPickHi(View3D, labels ? this.selection : null, labels);
+      this.applySceneCore(labels, labels ? this.selection : null);
     },
     onPick3D(hit) {
       const s = selOfPick(hit);
@@ -878,33 +631,9 @@ export default {
      * 缩放按钮就在画布覆盖层里，换算走 store Action setZoomFromPpm()，
      * 压视图撤销栈的 viewDirty() 由组件 emit('view-dirty') 回来。 */
 
-    /* ------- 属性编辑 ------- */
-    /* 属性编辑统一走 setProp()；engine 侧的选中态同步由 window.App.setSelection
-     * （bridge.js → editor store 的 setSelection Action）完成。 */
-    setProp(key, value, type) {
-      const it = this.selItem;
-      if (!it) return;
-      let v = parseFloat(value);
-      if (type === 'str') {
-        const s = (value || '').trim();
-        if (s) it[key] = s; else delete it[key];   // 清空 = 解绑，不留空串（插件侧统一按 falsy 判未绑定）
-      }
-      else { if (isNaN(v)) return; it[key] = type === 'deg' ? v * Math.PI / 180 : v; }
-      /* 位姿类字段（位置 / 离地 / 旋转 / 比例）：3D 里只有这一件事变了，就地改变换即可。
-       * 之前走 commit({rebuild:true}) → 整树重建（dispose 全屋材质 + 插件 reset +
-       * 标签 DOM 全删建），改一个数字就掉帧，还会因重建回中让视角跳。
-       * moveItem 只对「已登记的自由摆放实例」成功；门窗（跟墙洞口）与墙/房间等
-       * 结构件返回 false，自动回退到全量重建。 */
-      const pose = type !== 'str' && POSE_KEYS.indexOf(key) >= 0;
-      const moved = pose && this.mode === '3d' ? View3D.moveItem(it) : false;
-      const isStr = type === 'str';   // 实体绑定 / 名称等字符串字段：不重建，但要让插件与标签即时响应
-      this.commit({
-        rebuild: !isStr && !moved,     // 就地变换成功 → 不必重建
-        updateAll: isStr || !moved,    // 位置变化不涉及实体状态，省掉一次全插件推送
-        syncLabels: isStr || !moved,   // 标签每帧按实例坐标投影，位置变化自己跟着走
-      });
-    },
-    deg(rad) { return Math.round((rad || 0) * 180 / Math.PI); },
+    /* ------- 属性编辑 -------
+     * setProp / 数值底座 / 设备·门窗·家具数值 / 标签抬升已拆到
+     * composables/useNumEditing.js（文件头 import 处摊进 methods）。 */
 
     /* ------- 同类模型/造型切换 ------- */
     /* 「2D 重绘 + 存档 + 3D 重建」统一出口（属性/造型/数值修改共 10 余处手抄收敛于此）。
@@ -987,192 +716,9 @@ export default {
       this.setProp(key, '', 'str');
       this.toast('已解绑');
     },
-    /* ------- 数值编辑（设备/门窗/家具共用底座） -------
-     * applyNum: 解析 + 可选角度换算/夹取 + commit（原 setDevNum/setOpenNum/setFurnNum 三胞胎收敛于此）
-     * wheelStep: 滚轮步进（deltaY 向上 = 增）后走 applyNum（原 wheelNum/wheelOpen/wheelFurn 收敛于此）
-     * opts: { deg: 按°输入换算弧度, min/max: 夹取, int: 取整, redraw2d: 是否重绘 2D } */
-    applyNum(key, value, opts) {
-      const it = this.selItem;
-      if (!it) return;
-      const o = opts || {};
-      const v = parseFloat(value);
-      if (isNaN(v)) return;
-      let n = o.deg ? v * Math.PI / 180 : v;
-      if (o.int) n = Math.round(n);
-      if (o.min != null) n = Math.max(o.min, n);
-      if (o.max != null) n = Math.min(o.max, n);
-      it[key] = n;
-      /* 与 setProp 同一策略：位姿字段就地改变换，其余（尺寸 w/d/h 等）仍整树重建。
-       * 滚轮调 x/y/rot/pct（含拖动滑条）此前每一格都重建全屋，明显掉帧。 */
-      const moved = POSE_KEYS.indexOf(key) >= 0 && this.mode === '3d' ? View3D.moveItem(it) : false;
-      this.commit({ redraw2d: o.redraw2d !== false, rebuild: !moved });
-    },
-    wheelStep(key, e, step, opts) {
-      const it = this.selItem;
-      if (!it) return;
-      const o = opts || {};
-      const cur = o.deg ? this.deg(it[key]) : (parseFloat(it[key]) || 0);
-      let v = cur + (e.deltaY < 0 ? step : -step);
-      if (!o.deg) v = Math.round(v * 1000) / 1000;   // 浮点步进不留 0.30000000000000004 这类尾巴
-      this.applyNum(key, String(v), o);
-    },
-    /* 设备数值: x/y/rot 重绘 2D（redraw2d=true），z 不重绘（贴地属性由 3D 决定） */
-    setDevNum(key, value, redraw2d) {
-      this.applyNum(key, value, { min: key === 'z' ? 0 : null, redraw2d: !!redraw2d });
-    },
-    wheelNum(key, e, step, redraw2d, min, max) {
-      this.wheelStep(key, e, step, {
-        redraw2d: !!redraw2d,
-        min: min != null ? min : (key === 'z' ? 0 : null),
-        max: max != null ? max : null,
-      });
-    },
-    /* 标签抬升高度（m）: 实例覆盖造型声明值，只动 HTML 标签位置、不重建 3D ——
-     * View3D.updateLabels 每帧读 obj.labelOffset，改完下一帧就到位。
-     * 拖滑条时 200ms 防抖再 dirty（快照/自动保存），避免每一档都压一条撤销栈 */
-    setDevLabelOffset(value) {
-      const it = this.selItem;
-      if (!it) return;
-      if (String(value).trim() === '') return;                // 正在清空：等 @change 再决定
-      const v = parseFloat(value);
-      if (isNaN(v)) return;
-      it.labelOffset = Math.round(Math.max(-1, Math.min(6, v)) * 100) / 100;
-      clearTimeout(this._labelOffTimer);
-      this._labelOffTimer = setTimeout(() => this.dirty(), 200);
-    },
-    /* 输入框失焦/回车：清空 = 删掉实例覆盖，回到造型声明的 labelOffset */
-    commitDevLabelOffset(value) {
-      if (String(value).trim() === '') this.clearDevLabelOffset();
-      else this.setDevLabelOffset(value);
-    },
-    clearDevLabelOffset() {
-      const it = this.selItem;
-      if (!it || it.labelOffset == null) return;
-      delete it.labelOffset;
-      clearTimeout(this._labelOffTimer);
-      this._labelOffTimer = setTimeout(() => this.dirty(), 200);
-    },
-    wheelDevLabelOffset(e, step) {
-      const cur = parseFloat(this.labelOffsetVal) || 0;
-      this.setDevLabelOffset(cur + (e.deltaY < 0 ? step : -step));
-    },
-    /* 门窗数值: 宽度（最小 0.05m）/角度，实时刷新 2D + 3D */
-    setOpenNum(key, value, type) {
-      this.applyNum(key, value, { deg: type === 'deg', min: type === 'deg' ? null : 0.05 });
-    },
-    /* 窗离地高度: 0 起步（门恒 0 不可调，面板不渲染输入框） */
-    setOpenZ(value) { this.applyNum('z', value, { min: 0 }); },
-    wheelOpenZ(e, step) { this.wheelStep('z', e, step, { min: 0 }); },
-    wheelOpen(key, e, step, type) {
-      this.wheelStep(key, e, step, { deg: type === 'deg', min: type === 'deg' ? null : 0.05 });
-    },
-    /* 家具数值: 旋转/位置/离地高度/整体比例（20–300 取整），实时刷新 2D + 3D */
-    setFurnNum(key, value, type) {
-      this.applyNum(key, value, {
-        deg: type === 'deg',
-        min: key === 'z' ? 0 : (key === 'pct' ? 20 : null),
-        max: key === 'pct' ? 300 : null,
-        int: key === 'pct',
-      });
-    },
-    wheelFurn(key, e, step) {
-      if (key === 'rot') return this.wheelStep(key, e, step, { deg: true });
-      this.wheelStep(key, e, step, {
-        min: key === 'z' ? 0 : (key === 'pct' ? 20 : null),
-        max: key === 'pct' ? 300 : null,
-        int: key === 'pct',
-      });
-    },
-    /* ------- 参考底图（2D 户型图：全项目共用一张 —— 服务器端只存 data/refimg.* 一张图，
-     *          画完户型图基本就弃用，没必要按楼层各存一份；经 /api/refimg 读取，
-     *          src 带 ?t= 时间戳防缓存，重复上传不用刷新页面即可看到新图） ------- */
-    /* 文件选择框与 /api/upload 上传请求 → components/pages/editor/BgPanel.vue；
-     * 上传成功后 emit('uploaded', {url,name}) 回到下面的 applyBgImage。 */
-    /* 加载贴图并写入项目（bgImage 挂在 project 上：全楼层共用一张）。
-     * src 追加 ?t= 时间戳：同一会话里重复上传时 URL 变化，浏览器不命中旧缓存 */
-    applyBgImage(src, name) {
-      if (src.startsWith('/api/refimg')) {
-        src = src + (src.includes('?') ? '&' : '?') + 't=' + Date.now();
-      }
-      const img = new Image();
-      img.onload = () => {
-        const meta = { src, name: name || '贴图', x: 0, y: 0, w: 10, opacity: 0.35, hidden: false };
-        Editor.backgroundImage = Object.assign({ img }, meta);
-        this.bgW = 10;
-        this.bgInfo = { has: true, hidden: false };
-        if (this.project) this.project.bgImage = meta;
-        Editor.render();
-        this.dirty();
-      };
-      img.onerror = () => this.toast('图片加载失败');
-      img.src = src;
-    },
-    /* 把编辑器中的贴图状态写回项目并标记保存 */
-    writeBg() {
-      const bg = Editor.backgroundImage;
-      if (!this.project || !bg || !bg.src) return;
-      this.project.bgImage = {
-        src: bg.src, name: bg.name || '贴图',
-        x: bg.x, y: bg.y, w: bg.w,
-        opacity: bg.opacity == null ? 0.35 : bg.opacity,
-        hidden: !!bg.hidden,
-      };
-      this.dirty();
-    },
-    /* 楼层切换/载入时恢复贴图（项目级共用，切层不换图） */
-    syncBg() {
-      const b = this.project && this.project.bgImage;
-      const cur = Editor.backgroundImage;
-      if (!b || !b.src) {
-        if (cur && cur.src) { Editor.backgroundImage = null; this.bgInfo = { has: false, hidden: false }; Editor.render(); }
-        return;
-      }
-      if (cur && cur.src === b.src) {
-        Object.assign(cur, { x: b.x, y: b.y, w: b.w, opacity: b.opacity, hidden: !!b.hidden });
-        this.bgW = b.w || 10;
-        this.bgInfo = { has: true, hidden: !!b.hidden };
-        Editor.render();
-        return;
-      }
-      const img = new Image();
-      img.onload = () => {
-        // 载入期间项目可能已被撤销/重做替换
-        if (!this.project || !this.project.bgImage || this.project.bgImage.src !== b.src) return;
-        Editor.backgroundImage = Object.assign({}, this.project.bgImage, { img });
-        this.bgW = this.project.bgImage.w || 10;
-        this.bgInfo = { has: true, hidden: !!this.project.bgImage.hidden };
-        Editor.render();
-      };
-      img.src = b.src;
-    },
-    toggleBg() {
-      const bg = Editor.backgroundImage;
-      if (!bg || !bg.img) return;
-      bg.hidden = !bg.hidden;
-      this.bgInfo = { has: true, hidden: !!bg.hidden };
-      this.writeBg();
-      Editor.render();
-    },
-    onBgScale(e) {
-      const bg = Editor.backgroundImage;
-      if (!bg || !bg.img) return;
-      const nw = parseFloat(e.target.value) || 10;
-      // 缩放锚点 = 图片中心：调整左上角位置使中心保持不动
-      const ratio = bg.img.height / bg.img.width;
-      bg.x += (bg.w - nw) / 2;
-      bg.y += (bg.w - nw) * ratio / 2;
-      bg.w = nw;
-      this.bgW = nw;
-      this.writeBg();
-      Editor.render();
-    },
-    clearBg() {
-      Editor.backgroundImage = null;
-      this.bgInfo = { has: false, hidden: false };
-      // 保持贴图浮层打开，方便紧接着重新上传
-      if (this.project && this.project.bgImage) { this.project.bgImage = null; this.dirty(); }
-      Editor.render();
-    },
+    /* ------- 参考底图（2D 户型图） -------
+     * applyBgImage / writeBg / syncBg / toggleBg / onBgScale / clearBg 已拆到
+     * composables/useRefImage.js（文件头 import 处摊进 methods）。 */
 
     /* ------- 连接 -------
      * 表单字段、保存 / 测试请求、结果文案 → components/pages/editor/ConnModal.vue。
@@ -1188,12 +734,12 @@ export default {
     /* ------- HA 事件 ------- */
     onHAChange() {
       this.bumpEntities();
-      /* 引擎段若初始化失败，finally 里仍会发起 HA 连接（含演示模式的同步首帧推送），
-       * 此时不能让渲染调用再抛错打断状态回调 —— 只更新数据，等切视图时再重绘。 */
-      try {
+      /* 静默重绘底座（useSceneMode.refresh3dQuiet）：引擎段若初始化失败，finally 里
+       * 仍会发起 HA 连接（含演示模式的同步首帧推送），不能让渲染调用抛错打断回调。 */
+      this.refresh3dQuiet(() => {
         if (this.mode === '3d') View3D.refresh();
         else Editor.render();
-      } catch (e) { /* 引擎尚未就绪 */ }
+      });
     },
 
     /* ------- 提示 ------- */
@@ -1201,69 +747,16 @@ export default {
      * engine/view3d.js 的 window.App.toast() 由 bridge.js 指向同一个 Action
      * （展示页入口会覆盖成 PanelApp.toastMsg，那里才有气泡 DOM）。 */
 
-    bindKeys() {
-      window.addEventListener('keydown', (e) => {
-        /* Esc 关弹窗优先于一切（连接 / 导入 / 展示项 / 重置确认，后开的先关）：
-         * 必须放在输入框守卫**前面** —— 弹窗表单里正聚焦输入框时也要能 Esc 关闭。
-         * 没有弹窗时才落到下面的画布分支（取消绘制 + 收浮层 + 清选中）。 */
-        if (e.key === 'Escape' && this.dialogOpen) {
-          if (this.resetOpen) this.closeFlyout('reset');
-          else if (this.importOpen) this.closeFlyout('import');
-          else if (this.connOpen) this.closeFlyout('conn');
-          else this.closeFlyout('disp');
-          return;
-        }
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-        const map = { v: 'select', h: 'pan', r: 'room', w: 'wall', d: 'door', n: 'window', f: 'furniture', e: 'device', t: 'measure', b: 'bg', g: 'backdrop' };
-        const k = e.key.toLowerCase();
-        /* 撤销/重做: Ctrl/Cmd+Z、Ctrl/Cmd+Shift+Z（或 Ctrl+Y）；输入框聚焦时 bindKeys 顶部已跳过 */
-        const mod = e.ctrlKey || e.metaKey;
-        if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); return; }
-        if (mod && k === 'y') { e.preventDefault(); this.redo(); return; }
-        /* 顶栏按钮快捷键（与 TopBar 里的 <i class="tb-kbd"> 角标、title 提示一一对应）：
-         *   2 / 3 = 2D 编辑 / 3D 展示、L = 标签、K = 卡片、
-         *   M = 重置锚点、C = 连接、I = 导入插件/包。
-         * 全部要求不带修饰键（Ctrl+C 复制 / Ctrl+I / Ctrl+L 等一律放行）；
-         * 有弹窗时不抢键，也不和左侧工具键（v/h/r/w/d/n/f/e/b/g）重叠。 */
-        if (!mod && !this.dialogOpen) {
-          if (k === '2' && this.mode !== '2d') { this.setMode('2d'); return; }
-          if (k === '3' && this.mode !== '3d') { this.setMode('3d'); return; }
-          const top = { l: 'toggleLabels', k: 'toggleCards', m: 'resetAnchor', c: 'openConn', i: 'openImport' };
-          if (top[k]) { this[top[k]](); return; }
-        }
-        /* 必须排除 mod：否则 Ctrl+R（刷新）/ Ctrl+F（页内查找）会顺手切掉工具 */
-        if (map[k] && !mod && this.mode === '2d') this.setTool(map[k]);
-        if ((e.key === 'Delete' || e.key === 'Backspace') && this.mode === '2d') {
-          /* 画房间过程中 Backspace = 撤掉最后一个顶点（Delete 仍只删选中对象）：
-           * 点错一个角不用整间房重画 */
-          if (e.key === 'Backspace' && Editor.roomPts && Editor.roomPts.length) {
-            Editor.roomPts.pop();
-            if (!Editor.roomPts.length) Editor.roomPts = null;
-            Editor.render();
-            return;
-          }
-          Editor.deleteSelection();
-        }
-        /* Esc 统一收起: 取消绘制 + 收浮层 + 清选中 → 右侧无论从属性面板还是背景面板进来，
-         * 都回到「楼层设置」；'none' 是故意不存在的工具值 —— 不点亮任何左侧按钮
-         * （落到 editor 的 select default 分支，画布点击选中仍可用），也不默认切回「选择」。
-         * 房间：Esc = 落定当前多边形（>=3 点）+ 退出工具，所以 commitRoom() 必须在清空前调，
-         * 否则这一笔直接丢（commitRoom 内部已 render，并压一条撤销）。 */
-        if (e.key === 'Escape') {
-          Editor.commitRoom();
-          Editor.clearMeasures();   // 标线：Esc 整批清除（不落盘、不进撤销栈）
-          Editor.wallStart = null; Editor.ghost = null; Editor.select(null); Editor.render(); this.setTool('none', true);
-        }
-      });
-    },
+    /* bindKeys 已拆到 composables/useEditorKeys.js（文件头 import 处摊进 methods）。
+     * 键位分层与 Esc / 弹窗 / 输入框守卫的优先级口径见该文件头注。 */
 
     /* 启动遮罩的移除 / 12s 兜底统一由 components/common/boot.js 提供 */
   },
 
   watch: {
     /* 选中项 → 3D 场景高亮：房间地面提亮 + 描边，设备/门窗脚下圆环。
-     * 与大屏同一个入口 applyPickHi()，非 3D 模式一律清空（场景里不该留高亮）。 */
-    selection(v) { applyPickHi(View3D, v, this.mode === '3d'); },
+     * 与大屏同一个入口（useSceneMode.pickHi），非 3D 模式一律清空（场景里不该留高亮）。 */
+    selection(v) { this.pickHi(v, this.mode === '3d'); },
     /* 项目名称变化（手动改名 / 撤销重做恢复）→ 标签页标题同步 */
     'project.name'() { if (this.project) this.applyTitle(); },
     /* 设备面板的 4 个 watch（devFilter / devTabs / devOpen / devSearch）连同页签
@@ -1274,6 +767,23 @@ export default {
     // 12s 兜底：脚本异常导致 init() 未走到 bootDone() 时强制移除，避免卡在加载界面
     armBootFallback();
     this.init();
+  },
+
+  /* 卸载清理（审计 4-应用.4：此前无 beforeUnmount —— keydown/beforeunload 监听
+   * 与 5 个定时器只有注册没有清理；PanelApp 有完整清理，单侧遗漏）。
+   * MPA 页面级常驻时不触发，HMR / 组件复用 / 未来 SPA 化时避免叠加泄漏。 */
+  beforeUnmount() {
+    this.unbindKeys();
+    if (this._onBeforeUnload) {
+      window.removeEventListener('beforeunload', this._onBeforeUnload);
+      this._onBeforeUnload = null;
+    }
+    /* 属性编辑 / 背景参数 / 层高 / 自动保存 / 造型参数防抖定时器 */
+    ['_labelOffTimer', '_bgOptTimer', '_fhTimer', '_saveTimer', '_openOptTimer'].forEach((k) => {
+      if (this[k]) { clearTimeout(this[k]); this[k] = null; }
+    });
+    /* 引擎级卸载出口（审计 3.7）：渲染 RAF / resize / HA change 等模块级监听统一收口 */
+    disposeEngine();
   },
 };
 </script>

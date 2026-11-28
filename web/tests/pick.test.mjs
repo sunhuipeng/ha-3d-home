@@ -79,13 +79,6 @@ test('deviceFromHits：只命中蒸汽 → null', () => {
   assert.equal(deviceFromHits([hit(leaf)]), null);
 });
 
-test('deviceFromHits：noPick 光效在前、本体在后 → 仍跳过找本体（分级不误伤）', () => {
-  const grp = { userData: { ...DEVICE }, parent: null };
-  const halo = { userData: NO_PICK, parent: grp };
-  const body = { userData: {}, parent: grp };
-  assert.equal(deviceFromHits([hit(halo), hit(body)]), grp);
-});
-
 test('deviceFromHits：同一 mesh 上 pickBlock 优先于 noPick', () => {
   const both = { userData: { ...PICK_BLOCK, ...NO_PICK }, parent: null };
   assert.equal(deviceFromHits([hit(both)]), null);

@@ -113,7 +113,9 @@ function domainOf(eid) { return eid ? String(eid).split('.')[0] : ''; }
  * HA.friendly 尾段回退一致（那边是唯一出处，这里不能 import HA 才本地复刻一份） */
 function eidTailName(eid) { return eid ? String(eid).split('.').pop().replace(/_/g, ' ') : ''; }
 function clampInt(v, lo, hi) { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : lo; }
-function toNum(v) {
+/* 任意值 → 数字（非有限数返回 null）。命名刻意区别于插件契约的 ctx.toNum
+ * （审计 2.11：同名不同义 —— ctx.toNum 还排除 unknown/unavailable 字符串）。 */
+function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -275,9 +277,9 @@ function decorateNode(node, env) {
     _state: st ? st.state : '',
   });
   const raw = readValue(out, st);
-  out._min = toNum(dyn(out.min, st, 0));
-  out._max = toNum(dyn(out.max, st, 100));
-  out._step = toNum(dyn(out.step, st, 1)) || 1;
+  out._min = numOrNull(dyn(out.min, st, 0));
+  out._max = numOrNull(dyn(out.max, st, 100));
+  out._step = numOrNull(dyn(out.step, st, 1)) || 1;
   /* unit：插件写了就按 dyn 解析后显示（解析不到则不显示），没写就不显示单位 */
   out.unit = out.unit ? String(dyn(out.unit, st, '') || '') : '';
   out._options = resolveOptions(out.option !== undefined ? out.option : out.options, st);
@@ -289,7 +291,7 @@ function decorateNode(node, env) {
     out._value = raw;
     out._on = env && env.isOn ? !!env.isOn(node._eid) : out._state === 'on';
   } else if (out.type === 'range') {
-    out._value = toNum(raw);
+    out._value = numOrNull(raw);
   } else if (out.type === 'select' || out.type === 'choice') {
     out._value = raw;
   } else {
@@ -484,7 +486,7 @@ export const CardEngine = {
       const key = node.param || (a && a.param) || node.attr || 'value';
       let v = o && o.value !== undefined ? o.value : node._value;
       if (node.type === 'bool') v = (o && o.value !== undefined) ? toBool(o.value) : !toBool(node._value);
-      if (node.type === 'range') { const n = toNum(v); if (n === null) return null; v = n; }
+      if (node.type === 'range') { const n = numOrNull(v); if (n === null) return null; v = n; }
       if (v === null || v === undefined || v === '') return null;
       data[key] = v;
     }

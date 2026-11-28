@@ -92,6 +92,7 @@
 import { mapState } from 'pinia';
 import { useEditorStore } from '../../../stores/editor';
 import { roomArea } from '../../../model/catalog.js';
+import { devNameOf } from '../../../services/devName.js';
 import RoomPanel from './RoomPanel.vue';
 
 export default {
@@ -120,7 +121,7 @@ export default {
         /* 与 model/catalog.js 的 roomDevices() 同口径：只认 roomId + entityId，
            不做几何回算，也不把门窗家具算进来 —— 大屏卡片就是这样取的 */
         devices: devs.filter((d) => d.roomId === r.id && d.entityId)
-          .map((d) => ({ id: d.id, name: this.devName(d), eid: d.entityId })),
+          .map((d) => ({ id: d.id, name: devNameOf(d), eid: d.entityId })),
       }));
     },
     /* roomId 为空的设备：全屋卡片把它们追加在末尾，单独成组便于排序 */
@@ -129,7 +130,7 @@ export default {
       const fl = this.cur;
       if (!fl) return [];
       return (fl.devices || []).filter((d) => !d.roomId && d.entityId)
-        .map((d) => ({ id: d.id, name: this.devName(d), eid: d.entityId }));
+        .map((d) => ({ id: d.id, name: devNameOf(d), eid: d.entityId }));
     },
     selectedRoomId() {
       return this.selection && this.selection.kind === 'room' ? this.selection.id : '';
@@ -159,12 +160,7 @@ export default {
     if (!Object.keys(this.open).length && this.roomGroups.length) this.open[this.roomGroups[0].id] = true;
   },
   methods: {
-    /* 设备显示名与 2D 标签 / 卡片口径一致：HA 未连上时退回实体 id，不留空白 */
-    devName(d) {
-      const HA = window.HA;
-      const nm = (HA && HA.getState && HA.friendly && HA.getState(d.entityId)) ? HA.friendly(d.entityId) : '';
-      return nm || d.entityId || '未命名设备';
-    },
+    /* 设备显示名统一走 services/devName.js 的 devNameOf（审计 2.16） */
     isOpen(id) { return !!this.open[id === null ? '__free__' : id]; },
     toggle(id) {
       const k = id === null ? '__free__' : id;

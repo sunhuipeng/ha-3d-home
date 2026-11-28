@@ -19,9 +19,11 @@
 
 <script>
 import { vTap } from '../../../composables/useTap.js';
+import { cardDisabled } from './cardMixins';
 
 export default {
   name: 'CardToggle',
+  mixins: [cardDisabled],
   directives: { tap: vTap },
   props: {
     node: { type: Object, required: true },
@@ -32,7 +34,6 @@ export default {
   computed: {
     caption() { return this.text || this.node.label || '开 / 关'; },
     /* 没写 action 就是纯显示，不给点 */
-    dis() { return !!(this.node._disabled || !this.node.action); },
     /* 设备图标描述符（{svg|mdi|emoji}）：只有 solo 平铺格由 buildListCard 挂了 _ico，
      * group 行内的开关节点没有 → 三项全空，不占位 */
     ico() {

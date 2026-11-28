@@ -3,6 +3,15 @@
  * view3d.js — Three.js 3D 展示
  * 墙体分段开洞 / 地板 / 家具 GLB 体块 / 门窗与设备（造型全由插件生成，这里只做变换与拾取）
  * 背景挂载 / 楼层切换 / 点击控制 / 实时标签
+ *
+ * 生命周期契约（审计 3.6 / 3.7）：
+ *   - 本模块是模块级可变单例（View3D 导出对象 + 惰性 Map），MPA 页面级常驻；
+ *     监听器 / 渲染 RAF 一律经 init() / startLoop() 注册、dispose() / stopLoop()
+ *     成对移除（engine/index.js 的 disposeEngine() 聚合，两页根组件 beforeUnmount 调）。
+ *   - 跨模块总线的可写字段收敛为 setter：setHouseY / setGridNight / setLightingGain；
+ *     onPick 经 model/pick.js 的 applyPickMode（唯一赋值点）。其余模块不得直写字段。
+ *   - 业务状态（GLB 缓存 / 原型贴图 / 光源池）跨重建常驻、不随 dispose 释放 —— 这是
+ *     有意设计（复用省上传），dispose 只管「注册过的东西有地方注销」。
  */
 import * as THREE from 'three';
 import { Evaluator, Brush, ADDITION, SUBTRACTION } from 'three-bvh-csg';
@@ -150,7 +159,10 @@ export const View3D = {
      * 上限会被 enforceGroundLimit() 按当前锚点高度逐帧收紧，保证仰视也不穿地。 */
     this.controls.maxPolarAngle = MAX_POLAR_ANGLE;
     /* 用户一按下就放弃正在进行的相机飞行（房间视角），操控永远优先 */
-    this.controls.addEventListener('start', () => this.cancelFly());
+    /* 审计 3.7：监听器统一走 bind() 记录，dispose() 成对移除（此前只有注册） */
+    this._domBindings = [];
+    const bind = (t, type, fn, opts) => { t.addEventListener(type, fn, opts); this._domBindings.push([t, type, fn, opts]); };
+    bind(this.controls, 'start', () => this.cancelFly());
 
     this.raycaster = new THREE.Raycaster();
 
@@ -179,12 +191,12 @@ export const View3D = {
     this._lightPool = { point: [], spot: [] };
 
     this.resize();
-    window.addEventListener('resize', () => this.resize());
+    bind(window, 'resize', () => this.resize());
 
     // 点击设备
     const dom = this.renderer.domElement;
-    dom.addEventListener('click', (e) => this.onClick(e));
-    dom.addEventListener('mousemove', (e) => {
+    bind(dom, 'click', (e) => this.onClick(e));
+    bind(dom, 'mousemove', (e) => {
       /* 大屏里房间地面也可点，鼠标划过要一并给出手型光标 */
       const hit = this.pick(e) || (this.onPick ? this.pickRoom(e) : null);
       dom.style.cursor = hit ? 'pointer' : '';
@@ -195,7 +207,7 @@ export const View3D = {
     // 调用端可把 anchorEnabled 置 false 关掉整个长按能力（控制面板页：锚点固定跟选中项走）。
     let pressTimer = null, pressPos = null;
     const clearPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } pressPos = null; };
-    dom.addEventListener('pointerdown', (e) => {
+    bind(dom, 'pointerdown', (e) => {
       if (e.button !== 0) return;
       this._dragged = false;
       pressPos = { x: e.clientX, y: e.clientY };
@@ -209,14 +221,14 @@ export const View3D = {
         }
       }, 500);
     });
-    dom.addEventListener('pointermove', (e) => {
+    bind(dom, 'pointermove', (e) => {
       // 按下后拖动超过 8px = 在旋转视角，取消长按判定；同时记下来，避免松手时误当成点击
       if (pressPos && Math.hypot(e.clientX - pressPos.x, e.clientY - pressPos.y) > 8) {
         this._dragged = true;
         clearPress();
       }
     });
-    ['pointerup', 'pointercancel', 'pointerleave'].forEach((t) => dom.addEventListener(t, clearPress));
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach((t) => bind(dom, t, clearPress));
   },
 
   resize() {
@@ -243,6 +255,13 @@ export const View3D = {
     this.grid.material.color.setHex(this.gridNight ? GRID_TINT_NIGHT : GRID_TINT_DAY);
     this.grid.material.opacity = this.gridNight ? GRID_OPACITY_NIGHT : GRID_OPACITY_DAY;
     // color/opacity 是 uniform，无需 needsUpdate，下一帧 render 自动生效
+  },
+
+  /* 灯具池光倍率的正式写入 API（审计 3.5）：此前 lighting.js 直写 lightingGain 字段，
+   * 与 setGridNight 一并构成「引擎跨模块总线的 setter 出口」—— 写入方（lighting）
+   * 只调方法，字段语义/默认值变化不必跨模块同步。 */
+  setLightingGain(gain) {
+    this.lightingGain = (typeof gain === 'number' && isFinite(gain)) ? gain : 1;
   },
 
   /* 插件返回的背景 3D 模型（统一入口: 扁平背景 = 平面网格贴整图，立体背景 = 底图 + 体块）
@@ -1243,7 +1262,6 @@ export const View3D = {
     const t = w.t || 0.24;
     const e0 = ext ? ext[0] * t / 2 : 0, e1 = ext ? ext[1] * t / 2 : 0;
     const H = this.wallH;
-    const ux = dx / len, uy = dy / len;
     const DOOR_H = 2.05, WIN_SILL = 0.9, WIN_TOP = 2.1;
 
     /* 整面墙扣洞（不再按洞口分段拼盒子）。
@@ -1881,6 +1899,27 @@ export const View3D = {
     loop();
   },
 
+  /* 渲染循环停止出口（审计 3.7）：此前只有 startLoop 没有 stopLoop ——
+   * MPA 页面级常驻无实害，HMR / 未来 SPA 化会叠加泄漏。 */
+  stopLoop() {
+    if (this._loopRaf) cancelAnimationFrame(this._loopRaf);
+    this._loopRaf = 0;
+    this._loopRunning = false;
+  },
+
+  /* 监听器与定时器的统一卸载出口（审计 3.7）：与 init / startLoop 成对。
+   * 场景 / 材质等 Three 资源不在此时释放（GLB 缓存按 URL 复用，跨重建常驻），
+   * 这里只负责「注册过的东西有地方注销」。 */
+  dispose() {
+    this.stopLoop();
+    clearTimeout(this._bgReplay);
+    clearTimeout(this._bgRetry);
+    if (this._domBindings) {
+      this._domBindings.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
+      this._domBindings = null;
+    }
+  },
+
   disposeGroup(g) {
     /* GLB 缓存原型（_gltfProto）被 clone(true) 出的实例共享 geometry/material：
      * 一并 dispose 会让下一次渲染重新上传顶点缓冲 + 重编译材质
@@ -1893,7 +1932,11 @@ export const View3D = {
       for (const url in protos) {
         protos[url].traverse((o) => {
           if (o.geometry) shared.add(o.geometry);
-          if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => shared.add(m));
+          if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
+            shared.add(m);
+            /* 原型材质携带的贴图同样共享：实例侧只回收自己独享的贴图 */
+            for (const v of Object.values(m)) if (v && v.isTexture) shared.add(v);
+          });
         });
       }
       this._sharedRes = shared;
@@ -1904,7 +1947,13 @@ export const View3D = {
       if (o.material) {
         (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
           if (m === this._wallMat) return;   // 引擎持有的复用材质不回收（否则每次重建都重编译墙面着色器）
-          if (!shared.has(m)) m.dispose();
+          if (shared.has(m)) return;
+          m.dispose();
+          /* material.dispose() 不级联释放 texture：贴图必须逐个 dispose，
+           * 否则背景 2048² CanvasTexture 这类大贴图每次重建泄漏 GPU 内存 */
+          for (const v of Object.values(m)) {
+            if (v && v.isTexture && !shared.has(v)) v.dispose();
+          }
         });
       }
     });

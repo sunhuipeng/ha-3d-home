@@ -14,15 +14,16 @@
 
 <script>
 import { cardComponentOf } from './registry.js';
+import { cardRelay } from './cardMixins';
 
 export default {
   name: 'CardGroup',
+  mixins: [cardRelay],
   props: {
     node: { type: Object, required: true },
   },
   emits: ['act'],
   methods: {
-    relay(node, value) { this.$emit('act', node, value); },
     comp(c) { return cardComponentOf(c); },
     /* key 用「类型 + 实体 + 属性 + 下标」：结构不变时不会因为值变化而重建控件，
      * 否则滑块拖到一半会被卸载，draft 直接丢。 */

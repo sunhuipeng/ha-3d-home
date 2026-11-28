@@ -10,7 +10,6 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const zlib = require('zlib');
 const { ASSET_DIR, CUSTOM_DIR, PUBLIC_DIR, DATA_DIR, IS_PROD, log, readJSON, appVersion, normPathname } = require('./shared');
 
 /* ===== 家具目录 / 插件清单的内存快照 =====
@@ -413,15 +412,16 @@ function installCatalogPackage(files, expectedId) {
 
   const baseUrl = '/custom/models/' + encodeURIComponent(pack.id) + '/';
   const items = pack.items.map((it) => toCatalogItem(pack.id, it, baseUrl));
-  const ids = items.map((i) => i.id);
   const label = pack.name || pack.id;
   log('[ha-3d-home] 家具包已' + (upgraded ? '导入/覆盖' : '安装') + ':',
-    label, '(' + pack.id + ')', '共', ids.length, '件');
+    label, '(' + pack.id + ')', '共', items.length, '件');
+  /* 审计 2.4：原先把同一数据投影三遍（items/ids/count）—— ids 全仓零消费已删，
+   * count 保留（前端 ImportModal 展示「N 件家具」），条目明细以 items 为准。 */
   return {
     ok: true, kind: 'catalog',
     id: pack.id, name: pack.name, version: pack.version,
     upgraded, dir: baseUrl.slice(0, -1),
-    count: ids.length, ids, items,
+    count: items.length, items,
   };
 }
 
@@ -444,16 +444,16 @@ function installCatalogPackage(files, expectedId) {
  * custom 后扫描、同名覆盖内置；安装进来的目录名一律 = 插件 id（= studio 项目 id），
  * 所以重复安装同一插件就是原地覆盖升级。
  *
- * zip 解析为了保持零依赖，用内置 zlib 手写：只走中央目录，支持 stored(0)/deflate(8)，
- * 不支持 zip64（安装包远小于 4GB）。studio 打包用 jszip，产出正是 DEFLATE。
+ * zip 解析在 zip.js（零依赖，内置 zlib 手写：只走中央目录，支持 stored(0)/deflate(8)，
+ * 不支持 zip64；studio 打包用 jszip，产出正是 DEFLATE）。
  */
 
 
 const INSTALL_MAX_BYTES = 64 * 1024 * 1024;   // 单个安装包上限（插件包与家具包同一口径）
-/* 解压预算：压缩包本身 ≤64MB，但 deflate 可以把几十 KB 撑成几十 GB（zip bomb）。
- * 单条目与整包都设上限，zlib 的 maxOutputLength 会在超限当场抛错，不会先分配内存。 */
-const UNZIP_MAX_ENTRY = 64 * 1024 * 1024;
-const UNZIP_MAX_TOTAL = 128 * 1024 * 1024;
+
+/* zip 读取器（unzipEntries / normEntryName / 解压预算）已拆到 zip.js（审计 3.1）：
+ * 库级代码与业务解耦，两条安装链共用。 */
+const { unzipEntries, normEntryName } = require('./zip');
 
 /* 插件 id（目录名）字符集：与家具包目录名同一套规则，复用上面的 PACK_ID_RE */
 const PLUGIN_ID_RE = PACK_ID_RE;
@@ -461,64 +461,6 @@ const PLUGIN_ID_RE = PACK_ID_RE;
 /* 插件包的 kind 取值：device（门窗/灯/开关…一切有状态设备）与 background（户外地面等背景）。
  * 家具包是另一个值 catalog */
 const PLUGIN_KINDS = ['device', 'background'];
-
-/* ---------- zip 读取 ---------- */
-/* 读全部条目 → [{ name, data }]（目录条目跳过） */
-function unzipEntries(buf) {
-  const EOCD = 0x06054b50;
-  let eocd = -1;
-  /* EOCD 后可能跟最多 64KB 注释，从尾部往前扫签名 */
-  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
-    if (buf.readUInt32LE(i) === EOCD) { eocd = i; break; }
-  }
-  if (eocd < 0) throw new Error('不是有效的 zip（找不到中央目录）');
-
-  const count = buf.readUInt16LE(eocd + 10);
-  const cdOff = buf.readUInt32LE(eocd + 16);
-  if (cdOff >= buf.length) throw new Error('zip 中央目录位置越界');
-
-  const out = [];
-  let p = cdOff, total = 0;
-  for (let i = 0; i < count; i++) {
-    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw new Error('zip 条目损坏');
-    const method = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const rawSize = buf.readUInt32LE(p + 24);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const cmtLen = buf.readUInt16LE(p + 32);
-    const lho = buf.readUInt32LE(p + 42);          // 本地头偏移
-    const name = buf.slice(p + 46, p + 46 + nameLen).toString('utf8');
-    p += 46 + nameLen + extraLen + cmtLen;
-
-    if (name.endsWith('/')) continue;              // 目录条目
-    if (lho + 30 > buf.length || buf.readUInt32LE(lho) !== 0x04034b50) throw new Error('zip 本地头损坏: ' + name);
-    /* 本地头里的文件名/扩展区长度可能与中央目录不同，必须按本地头算数据起点 */
-    const start = lho + 30 + buf.readUInt16LE(lho + 26) + buf.readUInt16LE(lho + 28);
-    const data = buf.slice(start, start + compSize);
-    /* 先看中央目录声明的原始长度，明显超标就没必要解压了 */
-    if (rawSize > UNZIP_MAX_ENTRY) throw new Error('zip 条目解压后过大: ' + name);
-
-    let content;
-    if (method === 0) content = data;
-    else if (method === 8) content = zlib.inflateRawSync(data, { maxOutputLength: UNZIP_MAX_ENTRY });
-    else throw new Error('不支持的压缩方式(' + method + '): ' + name);
-    if (rawSize && content.length !== rawSize) throw new Error('解压长度校验失败: ' + name);
-    total += content.length;
-    if (total > UNZIP_MAX_TOTAL) throw new Error('安装包解压后体积过大（上限 ' + Math.round(UNZIP_MAX_TOTAL / 1048576) + 'MB）');
-    out.push({ name, data: content });
-  }
-  return out;
-}
-
-/* 条目名归一化：统一 / 分隔、去掉开头的 ./，挡掉绝对路径与 ..（这些名字直接用来写文件，
- * 来自外部不可信）。返回 null 表示不安全。 */
-function normEntryName(raw) {
-  const name = toPosix(raw).replace(/^\.\/+/, '');
-  if (!name || name.startsWith('/') || name.includes('\0')) return null;
-  if (name.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return null;
-  return name;
-}
 
 /* 插件包的条目白名单：只允许 plugin.json / plugin.js / models/<文件名> */
 function safePluginEntryName(name) {
@@ -768,17 +710,20 @@ const MIME = {
 const HASHED_BUNDLE = /^\/static\/.+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i;
 
 function serveStatic(req, res, u) {
-  /* 解码 + 归一化与门禁共用 normPathname（shared.js），保证前缀判断口径一致 */
+  /* 解码 + 归一化与门禁共用 normPathname（shared.js），保证前缀判断口径一致；
+   * 前缀分发用小写口径（大小写不敏感文件系统上 /ASSETS/ 与 /assets/ 同一目录），
+   * 实际文件路径保留原样（生产 Linux 区分大小写）。 */
   const p = normPathname(u);
-  let file = p === '/' ? '/index.html' : p === '/edit' || p === '/edit/' ? '/edit.html' : p;
+  const pl = p.toLowerCase();
+  let file = pl === '/' ? '/index.html' : pl === '/edit' || pl === '/edit/' ? '/edit.html' : p;
 
   let baseDir = PUBLIC_DIR;
   let full = path.join(baseDir, file);
-  if (file.startsWith('/assets/')) {
+  if (pl.startsWith('/assets/')) {
     baseDir = ASSET_DIR;
     full = path.join(baseDir, file.slice('/assets/'.length));
   }
-  if (file.startsWith('/custom/')) {   // 用户自定义资产（Docker 单独挂载卷）
+  if (pl.startsWith('/custom/')) {   // 用户自定义资产（Docker 单独挂载卷）
     baseDir = CUSTOM_DIR;
     full = path.join(baseDir, file.slice('/custom/'.length));
   }

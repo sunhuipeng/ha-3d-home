@@ -22,18 +22,11 @@
  * 存的引用口径；loadAll 侧按 id 匹配清单项、取其 entry 加载（并兼容 id≠dir 的自定义包）。
  */
 
-/* 与 engine/plugins.js 的 BG_ID_ALIAS 保持一致（背景旧 id 迁移）。
- * 不能 import 引擎（它依赖 three/DOM），这里只放同样的一行映射；改 alias 时两处同步。 */
-export const BG_ID_ALIAS = { backdrop_ground: 'background' };
+/* 旧 id 映射与插件段解析唯一出处 model/bgId.js（审计 2.9：此前与引擎各抄一份，
+ * 改 alias 要两处同步，漏同步会让旧项目背景解析失败）。零依赖，可安全 import。 */
+import { pluginIdOfStyle } from './bgId.js';
 
-/* 取 '<插件id>:<造型id>' 里的插件 id；无冒号时整串即 id；空值返回 ''。
- * 顺带迁移背景旧 id（对非背景插件无副作用: alias 表里只有背景那一条）。 */
-export function pluginIdOf(style) {
-  if (typeof style !== 'string' || !style) return '';
-  const i = style.indexOf(':');
-  const id = i < 0 ? style : style.slice(0, i);
-  return BG_ID_ALIAS[id] || id;
-}
+export function pluginIdOf(style) { return pluginIdOfStyle(style); }
 
 /* 从插件清单里取某 type 的默认插件 id —— 与引擎 defOf 同规则:
  *   id 与 type 同名者优先；否则该 type 第一个（顺序 = 清单顺序 = 内置先扫、custom 后扫覆盖）。

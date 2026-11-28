@@ -81,3 +81,52 @@ test('触发非法 id 本地拒绝；上游错误原样带错误文案', async (
   assert.equal(noPub.status, 502);
   assert.match((await noPub.json()).error, /没有正式版本/);
 });
+
+test('上游非 JSON / items 非数组：代理不崩，兜底 items: []（P1-7）', async () => {
+  /* 代理不转发客户端 header，用独立 flavor 服务器 + 临时切 env（autoBase 每请求现读） */
+  const flavor = (handler) => new Promise((resolve) => {
+    const srv = http.createServer(handler);
+    srv.listen(0, () => resolve(srv));
+  });
+  const htmlSrv = await flavor((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<html>not json</html>'); });
+  const badSrv = await flavor((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ items: 'not-an-array' })); });
+  const stop = async (srv) => { srv.closeAllConnections && srv.closeAllConnections(); await new Promise((r) => srv.close(r)); };
+  try {
+    process.env.HA3D_AUTOMATION_URL = 'http://127.0.0.1:' + htmlSrv.address().port;
+    const html = await fetch(homeBase + '/api/automation/actions');
+    assert.equal(html.status, 200);
+    assert.deepEqual(await html.json(), { items: [] }, 'HTML 正文解析失败按空候选兜底');
+
+    process.env.HA3D_AUTOMATION_URL = 'http://127.0.0.1:' + badSrv.address().port;
+    const badItems = await fetch(homeBase + '/api/automation/actions');
+    assert.equal(badItems.status, 200);
+    assert.deepEqual(await badItems.json(), { items: [] }, 'items 非数组兜底空候选');
+  } finally {
+    process.env.HA3D_AUTOMATION_URL = upstreamBase;
+    await stop(htmlSrv);
+    await stop(badSrv);
+  }
+});
+
+test('上游超时：8s 无响应 → 502「请求超时」且错误消息不泄漏上游地址（P1-7，收尾慢用例）', async () => {
+  /* 挂起式 mock：收到请求只收下 socket 不回 —— 代理 8s AbortController 超时路径 */
+  const hang = http.createServer(() => { /* 故意不响应 */ });
+  await new Promise((resolve) => hang.listen(0, resolve));
+  const hangBase = 'http://127.0.0.1:' + hang.address().port;
+  process.env.HA3D_AUTOMATION_URL = hangBase;   // autoBase() 每请求现读 env
+  try {
+    const t0 = Date.now();
+    const res = await fetch(homeBase + '/api/automation/actions');
+    const dt = Date.now() - t0;
+    assert.equal(res.status, 502);
+    const data = await res.json();
+    assert.match(data.error, /请求超时/);
+    assert.ok(!data.error.includes(hangBase), '错误消息抹掉上游地址');
+    assert.ok(!data.error.includes('127.0.0.1'), '不得泄漏任何内网地址');
+    assert.ok(dt >= 7800 && dt < 11000, '超时窗口约 8s，实际 ' + dt + 'ms');
+  } finally {
+    process.env.HA3D_AUTOMATION_URL = upstreamBase;
+    hang.closeAllConnections && hang.closeAllConnections();
+    await new Promise((resolve) => hang.close(resolve));
+  }
+});

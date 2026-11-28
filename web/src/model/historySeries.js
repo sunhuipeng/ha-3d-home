@@ -11,9 +11,6 @@
  * 三段（解析 → 模式判定/量程 → SVG 坐标映射）全是纯函数，可单测。
  */
 
-export const HISTORY_HOURS = 24;
-export const HISTORY_TTL_MS = 5 * 60 * 1000;
-
 /* 原始解析：兼容三种 HA 返回 ——
  *   ① 现行 WS history/history_during_period：{ "<eid>": [{s,t},...] } 字典；
  *   ② 旧 WS history/period：{ result: [[{s,t},...]] } 二维数组；

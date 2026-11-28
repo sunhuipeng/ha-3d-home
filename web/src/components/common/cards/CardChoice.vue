@@ -27,11 +27,13 @@
 <script>
 import { mapState } from 'pinia';
 import { useUiStore } from '../../../stores/ui';
+import { cardDisabled } from './cardMixins';
 
 const MOVE = 8;   // 起滑阈值：位移超过 8px 才算「有意滑动」，否则松手一律不提交
 
 export default {
   name: 'CardChoice',
+  mixins: [cardDisabled],
   props: { node: { type: Object, required: true } },
   emits: ['act'],
   data() {
@@ -42,7 +44,6 @@ export default {
     ...mapState(useUiStore, ['jsGesture']),
     options() { return this.node._options || []; },
     /* 与 CardSelect 同口径：没 action / 实体不可用都禁用 */
-    dis() { return !!(this.node._disabled || !this.node.action); },
     /* 只有「JS 接管滚动 + 可用」才进滑动模式（窄屏 ∥ app 宽屏 TV 模式）。
        PanelApp.onStageTouchStart 的白名单读 data-slide，与这里同一个判定，
        不会「页面放行手势但组件还在点选」。浏览器宽屏则是点即切换。 */

@@ -13,12 +13,14 @@
 </template>
 
 <script>
+import { cardDisabled } from './cardMixins';
+
 export default {
   name: 'CardSelect',
+  mixins: [cardDisabled],
   props: { node: { type: Object, required: true } },
   emits: ['act'],
   computed: {
-    dis() { return !!(this.node._disabled || !this.node.action); },
     selected() {
       const list = this.node._options || [];
       const v = this.node._value;

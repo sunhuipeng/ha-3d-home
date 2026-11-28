@@ -42,7 +42,7 @@ async function upstream(apiPath, { method = 'GET', timeoutMs = 8000 } = {}) {
   } catch (e) {
     if (e.upstream) throw e;
     const raw = e && e.name === 'AbortError' ? '请求超时' : errText(e);
-    const err = new Error('automation 代理失败：' + String(raw).split(base).join('[automation]'));
+    const err = new Error('automation 代理失败：' + core.maskUpstream(raw, base, 'automation'));
     err.status = 502;
     throw err;
   } finally { clearTimeout(timer); }
@@ -70,4 +70,4 @@ function routes() {
   return r;
 }
 
-module.exports = { routes, autoBase, upstream };
+module.exports = { routes };

@@ -153,11 +153,13 @@
  * 共享状态全部来自 useEditorStore，零 props：
  *  - project / selection / entVersion：原始 state
  *  - cur / selItem / kindName：共享 getters（原先本组件与 App.vue 各算一份，现收敛到 store）
- *  - 样式列表 / 造型参数 / 点击规格 / 标签高度…：本分支独有派生数据，仍在组件内从
- *    window 服务层（catalog / PluginEngine / HA）算，靠 void entVersion 触发重算
+ *  - 样式列表 / 造型参数 / 点击规格 / 标签高度…：服务层派生已收敛到 editor store
+ *    getters（审计 3.15，依赖信号在 store 统一建），本组件 mapState 直读；
+ *    纯文案 / 纯逻辑类派生留在本组件
  *
- * 动作一律 emit 回根组件：它们要压撤销栈、重建 3D、推插件状态，属于根组件编排；
- * 这里的同名 method 只是薄转发。
+ * 动作经 :act props 注入根组件的编排方法（名单唯一出处见 inspectorActs.js，
+ * 审计 2.18：原先 20 个 emits 通道 + 20 个转发壳，新增输入框要同步改 4 处）；
+ * 编排动作（压撤销栈 / 重建 3D / 推插件状态）仍由根组件完成，本组件不碰引擎。
  * 模板按「共用块 + kind 分支」组织：房间归属 / 主实体 / 点击控制 / 拓展绑定 /
  * 删除对所有类型共用一份 DOM，文案差异由 hasDeviceContract / bindingTip /
  * clickCheckboxText / clickTip 按 kind 分派；分支里只留各类型不同的摆放参数。
@@ -165,95 +167,33 @@
  */
 import { mapState } from 'pinia';
 import { useEditorStore } from '../../../stores/editor';
-import { useCatalogStore } from '../../../stores/catalog';
+import { labelOffsetDefaultOf, labelOffsetValOf } from '../../../composables/useNumEditing';
+import { INSPECTOR_ACTS } from './inspectorActs';
+/* 服务层派生已收敛到 editor store getters（审计 3.15），本组件只留两个纯展示
+ * 辅助（图标渲染）的 ESM 直连（审计 3.10：不走 window 双轨）。 */
+import { devStyleIcon, furnIcon } from '../../../model/catalog.js';
 import OptionRow from '../../common/OptionRow.vue';
 import EntityInput from '../../common/EntityInput.vue';
 
 export default {
   name: 'SelectionInspector',
   components: { OptionRow, EntityInput },
-  emits: [
-    'set-sel-style', 'set-sel-opt', 'swap-furn-model', 'set-furn-num', 'wheel-furn',
-    'set-dev-num', 'wheel-num', 'set-dev-label-offset', 'commit-dev-label-offset',
-    'wheel-dev-label-offset', 'set-prop', 'set-dev-click', 'set-dev-click-svc',
-    'set-open-num', 'wheel-open', 'set-open-z', 'wheel-open-z',
-    'clear-dev-field', 'del-selected', 'dirty',
-  ],
+  /* 根组件打包的动作对象（见 inspectorActs.js 的名单契约） */
+  props: { act: { type: Object, required: true } },
   computed: {
+    /* 服务层派生（样式列表 / 参数 schema / 点击规格 / 实时读数…）已收敛到 editor
+     * store getters（审计 3.15）：依赖 window 服务层 + void entVersion 的重算信号
+     * 统一在 store 里建一次，组件不再各自手写。纯文案类留在下方本组件内。 */
     ...mapState(useEditorStore, [
       'project', 'selection', 'entVersion', 'cur', 'selItem', 'kindName',
+      'selName', 'selHasModel', 'sameModels', 'selStyleList', 'selStyleId',
+      'selStyleDesc', 'devIsLight', 'furnKind', 'devStyleName',
+      'labelOffsetDefault', 'labelOffsetVal', 'selOptList', 'selFields',
+      'devClickSpec', 'devClickOn', 'devClickSvcOpts', 'devState', 'devFieldState',
     ]),
-    /* 家具分类枚举的响应式信号：只用于让 furnKind 在目录加载完成后重算
-     * （FURNITURE_TYPES 由 /api/catalog 下发，首帧只有 other 占位） */
-    ...mapState(useCatalogStore, { catalogTypes: 'types' }),
     /* 「所属房间」下拉的选项：房间是楼层级数据，设备/家具不可能跨层归属 */
     roomOptions() {
       return ((this.cur && this.cur.rooms) || []).map((r) => ({ id: r.id, name: r.name || '房间' }));
-    },
-    /* 选中项标题（家具从目录形态解析；设备名跟随 HA，门窗跟随插件样式名） */
-    selName() {
-      const it = this.selItem;
-      if (!it || !this.selection) return '';
-      void this.entVersion;
-      return window.itemDisplayName(this.selection.kind, it);
-    },
-    /* 选中家具有没有可用模型：目录与实例都没给地址时，面板才露出「模型地址」手填行 */
-    selHasModel() {
-      const it = this.selItem;
-      if (!it || !this.selection || this.selection.kind !== 'furniture') return true;
-      return !!(it.model || window.furnSpec(it).model);
-    },
-    /* 选中家具的同类模型（右侧切换，按固定类型聚合） */
-    sameModels() {
-      void this.entVersion;
-      const it = this.selItem;
-      if (!it || this.selection.kind !== 'furniture') return [];
-      const t = window.furnSpec(it).type;
-      if (!t) return [];
-      return window.allFurniture().filter((f) => (t === 'other' ? window.isOtherFurnType(f.type) : f.type === t));
-    },
-    /* 选中对象的插件样式列表: 设备按 type 聚合，门窗按插件 styles 聚合 */
-    selStyleList() {
-      const it = this.selItem;
-      if (!it) return [];
-      const k = this.selection.kind;
-      if (k === 'device') return window.deviceStyles(window.devTypeOf(it)) || [];
-      if (k === 'door' || k === 'window') {
-        void this.entVersion;
-        if (!window.PluginEngine || !PluginEngine.ready) return [];
-        return PluginEngine.styles(k) || [];
-      }
-      return [];
-    },
-    selStyleId() {
-      const it = this.selItem;
-      if (!it) return '';
-      if (this.selection.kind === 'device') {
-        const s = window.deviceStyleDef(it, window.devTypeOf(it));
-        return s ? s.id : '';
-      }
-      const list = this.selStyleList;
-      const s = (it.style && list.find((x) => x.id === it.style)) || list[0];
-      return s ? s.id : '';
-    },
-    selStyleDesc() {
-      const s = this.selStyleList.find((x) => x.id === this.selStyleId);
-      return s && s.desc ? s.desc : '';
-    },
-    devIsLight() {
-      const it = this.selItem;
-      if (!it || this.selection.kind !== 'device') return false;
-      return window.devTypeOf(it) === 'light';
-    },
-    /* 家具插件实例（device + type:'furniture'）的家具分类中文名（柜架/床品/桌几…）:
-     * 分类键来自插件造型的 ftype（styles[].ftype 覆盖插件级），由引擎透传到聚合造型条目。
-     * 未声明 ftype 回退「家具」，枚举外的值经 furnTypeOfStyle 归「其他」。非家具返回 ''。 */
-    furnKind() {
-      const it = this.selItem;
-      if (!it || this.selection.kind !== 'device' || window.devTypeOf(it) !== 'furniture') return '';
-      void this.entVersion;   // 插件加载/热刷新后 ftype 才有值，跟样式列表同一信号重算
-      void this.catalogTypes; // 家具分类枚举来自 /api/catalog，目录到齐后中文名才可解析
-      return window.furnTypeName(window.furnTypeOfDevice(it)) || '家具';
     },
     /* 标题类别名: 家具插件显示家具分类（替代「设备」），其它沿用 kindName */
     kindLabel() {
@@ -267,100 +207,18 @@ export default {
       }
       return this.kindName + '样式';
     },
-    /* 当前造型名（「设备绑定」区的模型 chip）：设备按 devTypeOf 解析，
-     * 门/窗按插件聚合样式列表取 —— 与设备同一套展示，不再回退成「默认造型」。 */
-    devStyleName() {
-      const it = this.selItem;
-      const k = this.selection && this.selection.kind;
-      if (!it) return '';
-      if (k === 'device') {
-        const s = window.deviceStyleDef(it, window.devTypeOf(it));
-        return s ? s.name : '';
-      }
-      if (k === 'door' || k === 'window') {
-        const s = this.selStyleList.find((x) => x.id === this.selStyleId);
-        return s ? s.name : '';
-      }
-      return '';
-    },
-    /* 标签抬升高度的造型默认值（styles[].labelOffset，缺省 0.3m） */
-    labelOffsetDefault() {
-      const it = this.selItem;
-      const k = this.selection && this.selection.kind;
-      if (!it) return 0.3;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return 0.3;
-      const type = k === 'device' ? window.devTypeOf(it) : k;
-      return window.PluginEngine ? PluginEngine.labelOffset(type, it.style) : 0.3;
-    },
-    /* 面板显示值：实例覆盖 obj.labelOffset 优先，没设过就显示造型默认值 */
-    labelOffsetVal() {
-      const it = this.selItem;
-      return it && it.labelOffset != null ? it.labelOffset : this.labelOffsetDefault;
-    },
-    /* 当前样式的条目参数（值 = 默认值 ∪ 实例已存值 obj.styleOpts） */
-    selOptList() {
-      void this.entVersion;
-      const k = this.selection && this.selection.kind;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return [];
-      const it = this.selItem;
-      if (!it) return [];
-      const s = this.selStyleList.find((x) => x.id === this.selStyleId);
-      const schema = PluginEngine.normalizeOptions((s && s.options) || []);
-      if (!schema.length) return [];
-      /* 取值合并（默认∪已存）直接用引擎的 mergeOptions —— 与 model3d/plan2d 渲染时
-       * styleOptionsOf 是同一套规则，面板显示什么、场景就画什么，不会各改各的 */
-      const merged = PluginEngine.mergeOptions(schema, it.styleOpts || {});
-      return schema.map((o) => Object.assign({}, o, { value: merged[o.key] }));
-    },
-    /* 选中对象的插件绑定字段（按当前样式所属插件取 fields 声明） */
-    selFields() {
-      const k = this.selection.kind;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return [];
-      if (!window.PluginEngine) return [];
-      void this.entVersion;
-      const it = this.selItem;
-      const kindOrType = k === 'device' ? window.devTypeOf(it) : k;
-      const def = PluginEngine.defFor(kindOrType, it && it.style);
-      return def ? PluginEngine.fieldsOf(def) : [];
-    },
     selFieldsTip() {
       return this.selection.kind === 'device'
         ? '除主实体外，插件还可挂功率/温湿度/人体/曲目等实体，用来丰富模型屏幕与标签的数据'
         : '除主实体外，插件还可挂开度等扩展实体；绑定后由插件按状态驱动模型（如门磁 on=开门动画）';
     },
-    /* 点击控制规格（插件声明优先，否则内置默认；null = 不支持点击） */
-    /* devClickSpec = 插件**声明**的原始 click 规格（label / on / off 供下拉与文案展示，
-     * 不含实例覆盖 —— 面板正是编辑覆盖的地方）；「能不能点」的实例级判定走
-     * PluginEngine.instanceClickSpec（与 3D 标签 clickable / toggleDevice 同一口径） */
-    devClickSpec() {
-      const it = this.selItem;
-      const k = this.selection && this.selection.kind;
-      if (!it || !window.PluginEngine) return null;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return null;
-      return PluginEngine.clickSpec(k === 'device' ? window.devTypeOf(it) : k, it.style);
-    },
-    devClickOn() {
-      const it = this.selItem;
-      const k = this.selection && this.selection.kind;
-      if (!it || !window.PluginEngine) return false;
-      if (k !== 'device' && k !== 'door' && k !== 'window') return false;
-      /* 勾选框编辑的正是 obj.click：显式值直接回显（否则勾上又自己弹回）；
-       * 未设置时跟随 instanceClickSpec 的默认结论（插件 defaultOn / clickSvc 覆盖都算进来），
-       * 与 3D 标签是否可点、卡片电源开关是否渲染完全同一口径。
-       * type 要传真实 HA 域（设备取 devTypeOf，门窗就是 kind），不能直接传 'device'。 */
-      if (it.click === true || it.click === false) return it.click;
-      return !!PluginEngine.instanceClickSpec(it, k === 'device' ? window.devTypeOf(it) : k);
-    },
+    /* 「设备绑定」区的动作文案：由 store 的 devClickSpec 组装（纯文案，留在组件内） */
     devClickText() {
       const spec = this.devClickSpec;
       if (!spec) return '';
       const name = (v) => (typeof v === 'function' ? '自定义动作' : v);
       const a = name(spec.on), b = name(spec.off);
       return spec.label + '（' + (a === b ? a : a + ' / ' + b) + '）';
-    },
-    devClickSvcOpts() {
-      if (!window.PluginEngine) return [];
-      return PluginEngine.clickServiceOptions();
     },
     /* ---- 共用块的显隐与文案：设备 / 门窗同一份 DOM，差异只在这里按 kind 分派 ----
      * 目录家具（floors.furniture）不走插件链路，没有 entityId / click 契约，
@@ -394,50 +252,17 @@ export default {
         ? '第一项走插件声明的 click（未声明时按内置默认）；其余为 HA 标准服务动作，选择后覆盖插件内置、优先级最高。勾选后点击 3D 设备即发送对应服务，取消勾选则不响应点击'
         : '门窗与设备同一规则：插件声明了 click（如卷帘门 open_cover/close_cover）默认勾选启用，没声明则默认不勾选。第一项走插件 click，其余为 HA 标准动作、选择后覆盖插件内置且优先级最高；未绑定实体的门窗点击不发送服务';
     },
-    devState() {
-      void this.entVersion;
-      const it = this.selItem;
-      if (!it || !it.entityId) return '';
-      const st = HA.getState(it.entityId);
-      if (!st) return '';
-      return st.state + HA.unitOf(st);
-    },
   },
   methods: {
     /* ---- 纯展示辅助（不需要回根组件） ---- */
     deg(rad) { return Math.round((rad || 0) * 180 / Math.PI); },
-    devStyleIcon(s) { return window.devStyleIcon(s); },
-    furnIcon(f, scale) { return window.furnIcon(f, scale); },
-    devFieldVal(key) {
-      void this.entVersion;
-      const it = this.selItem;
-      const eid = it && it[key];
-      if (!eid) return '';
-      const st = HA.getState(eid);
-      if (!st) return '未找到';
-      return st.state + HA.unitOf(st);
-    },
-    /* ---- 动作转发：根组件负责 commit / 撤销栈 / 引擎刷新 ---- */
-    dirty() { this.$emit('dirty'); },
-    setSelStyle(s) { this.$emit('set-sel-style', s); },
-    setSelOpt(k, v) { this.$emit('set-sel-opt', k, v); },
-    swapFurnModel(f) { this.$emit('swap-furn-model', f); },
-    setFurnNum(k, v, t) { this.$emit('set-furn-num', k, v, t); },
-    wheelFurn(k, e, s) { this.$emit('wheel-furn', k, e, s); },
-    setDevNum(k, v, r) { this.$emit('set-dev-num', k, v, r); },
-    wheelNum(k, e, s, r, min, max) { this.$emit('wheel-num', k, e, s, r, min, max); },
-    setDevLabelOffset(v) { this.$emit('set-dev-label-offset', v); },
-    commitDevLabelOffset(v) { this.$emit('commit-dev-label-offset', v); },
-    wheelDevLabelOffset(e, s) { this.$emit('wheel-dev-label-offset', e, s); },
-    setProp(k, v, t) { this.$emit('set-prop', k, v, t); },
-    setDevClick(v) { this.$emit('set-dev-click', v); },
-    setDevClickSvc(k) { this.$emit('set-dev-click-svc', k); },
-    setOpenNum(k, v, t) { this.$emit('set-open-num', k, v, t); },
-    wheelOpen(k, e, s, t) { this.$emit('wheel-open', k, e, s, t); },
-    setOpenZ(v) { this.$emit('set-open-z', v); },
-    wheelOpenZ(e, s) { this.$emit('wheel-open-z', e, s); },
-    clearDevField(k) { this.$emit('clear-dev-field', k); },
-    delSelected() { this.$emit('del-selected'); },
+    devStyleIcon(s) { return devStyleIcon(s); },
+    furnIcon(f, scale) { return furnIcon(f, scale); },
+    devFieldVal(key) { return this.devFieldState(key); },
+    /* ---- 动作转发（inspectorActs.js 名单生成）：根组件负责 commit / 撤销栈 / 引擎刷新。
+     * Vue 的 options methods 会在模板解析时绑定实例，this.act 即根组件打包的动作对象；
+     * 模板里仍是裸名调用（方法名解析优先于 props，不会与 act 撞名）。 ---- */
+    ...Object.fromEntries(INSPECTOR_ACTS.map((n) => [n, function (...args) { return this.act[n](...args); }])),
   },
 };
 </script>

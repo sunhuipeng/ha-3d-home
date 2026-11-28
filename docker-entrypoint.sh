@@ -11,7 +11,7 @@ DATA_DIR="${HA3D_DATA_DIR:-/data}"
 CUSTOM_DIR="/custom"
 SEED_DIR="/app/seed"
 
-# 日志开关: 生产模式默认静默；排查时 -e HA3D_LOG=1
+# 日志开关: 默认打印；要静默用 -e HA3D_LOG=0（或 false）
 say() {
   if [ -z "${HA3D_LOG}" ] || { [ "${HA3D_LOG}" != "0" ] && [ "${HA3D_LOG}" != "false" ]; }; then
     echo "[init] $1"
@@ -31,7 +31,7 @@ if [ ! -f "$DATA_DIR/config.json" ] && [ -f "$SEED_DIR/data/config.json" ]; then
 fi
 if [ ! -f "$DATA_DIR/project.json" ] && [ -f "$SEED_DIR/data/project.json" ]; then
   cp "$SEED_DIR/data/project.json" "$DATA_DIR/project.json"
-  say "写入默认 project.json（示例户型）"
+  say "写入默认 project.json（空户型骨架，floors/walls 为空，等用户在编辑器里搭）"
 fi
 
 exec "$@"

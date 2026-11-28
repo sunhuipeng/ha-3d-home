@@ -24,14 +24,13 @@ const core = require('./shared');
 const auth = require('./auth');
 const { json, log, logErr, errText } = core;
 
-function haBase() { return (core.getConfig().haUrl || '').trim().replace(/\/+$/, ''); }
+/* haBase 单一出处是 shared.js（审计 2.1）：此前 config/ha-proxy 两处各写一份，一处 trim 一处不 trim */
+const haBase = core.haBase;
 
-/* 报错脱敏：errText 清路径后，还要把 HA 内网地址抹掉（fetch 的报错常带完整 target URL）。
- * 这是服务端唯一一处不走 errText 直回前端的转发路由，曾泄漏过内网地址。 */
+/* 报错脱敏：收敛到 shared.maskUpstream（审计 2.5，automation-proxy 同款逻辑）。
+ * 本模块是不走 errText 直回前端的转发路由，曾泄漏过内网地址。 */
 function safeErr(e, base) {
-  let m = errText(e);
-  if (base) m = m.split(base).join('[ha]');
-  return m;
+  return core.maskUpstream(e, base, 'ha');
 }
 
 /* http(s)://host:port → { secure, host, port }；无效返回 null */
@@ -174,7 +173,17 @@ function mediaRoutes() {
       if (h.get('cache-control')) res.setHeader('Cache-Control', h.get('cache-control'));
       res.status(up.status);
       if (!up.body) return res.end();
-      Readable.fromWeb(up.body).pipe(res);
+      /* try/catch 只覆盖 fetch 阶段：上游流中途出错若无监听会成为 uncaught
+       * exception，崩掉整个进程（曾因这里进程反复重启）。客户端提前断开时
+       * 也要 cancel 上游流，别让 HA 继续把图片下载完。 */
+      const stream = Readable.fromWeb(up.body);
+      /* cancel 对已消费完/已出错的流会返回 rejected promise（流被 reader 锁定），
+       * 必须把同步抛错与异步拒绝都吞掉，否则又是一个 unhandledRejection */
+      const cancelUp = () => { try { Promise.resolve(up.body.cancel()).catch(() => {}); } catch (e) { /* 已结束 */ } };
+      stream.on('error', () => { try { res.destroy(); } catch (e) { /* 连接已断 */ } });
+      res.on('error', cancelUp);
+      res.on('close', cancelUp);
+      stream.pipe(res);
     } catch (e) {
       if (!res.headersSent) return json(res, 502, { error: 'HA 媒体转发失败: ' + safeErr(e, base) });
       try { res.end(); } catch (e2) {}

@@ -48,30 +48,27 @@ import { useCards } from './composables/useCards';
 import { useHud } from './composables/useHud';
 import { useDisplayDerived } from './composables/useDisplayDerived';
 import { useSceneRunner } from './composables/useSceneRunner';
-import { bootStageData, waitForPaint, waitForCardsReady, startStage3D, DEFAULT_CAM } from './composables/useStageBoot';
-import { selOfPick, applySceneMode as syncSceneMode, applyPickHi } from './model/pick';
+import { bootStageData, waitForPaint, waitForCardsReady, startStage3D } from './composables/useStageBoot';
+import { selOfPick } from './model/pick';
 import { PREF_KEYS, prefBool, prefSetBool, prefInt, prefSetInt } from './services/prefs';
 
 /* 版面 / 取景 / 手势的全部常量集中在 model/stageLayout.js（JS 侧唯一出处）。
  * CSS 里的 1024 / 340 / .38 无法引用 JS，改动时须两边同步。 */
-import {
-  isWideViewport, STAGE_BAND_INIT,
-  FILL_STAGE_WIDE, FILL_STAGE_INIT, FILL_STAGE_GAIN,
-  FILL_ROOM_WIDE, FILL_ROOM_GAIN, SMOOTH_K,
-} from './model/stageLayout';
-/* 阶段 0：纯计算搬到 model/ 下（零 Vue/DOM/THREE，可 Node 单测），本文件只留副作用壳 */
-import {
-  stageBounds, clampBand, jsGestureOf, wheelHScroll,
-  splitVerticalGesture, sampleMove, flingVelocity, nextFlingVelocity, flingFrameDt,
-} from './model/panelGesture';
-/* 窄屏点按判定：滚动是 JS 分发的，浏览器仍会合成 click。这里把「本次手势是否
-   已经滚动」「惯性是否还在跑」写成唯一真相，v-tap 在抬手时读它决定要不要提交。 */
-import {
-  gestureState, beginGesture, markGestureMoved, setFlingRunning, tapExceedsMove,
-} from './model/tapGesture';
-import {
-  stageMetricsOf, viewOffsetOf, fitScaleOf, fitDistanceOf, screenBoundsOf,
-} from './model/panelCamera';
+import { isWideViewport } from './model/stageLayout';
+/* 阶段 0：纯计算搬到 model/ 下（零 Vue/DOM/THREE，可 Node 单测），本文件只留副作用壳。
+ * 窄屏点按判定（tapGesture）：beforeUnmount 清理手势状态时还要 beginGesture()。 */
+import { beginGesture } from './model/tapGesture';
+/* 结构重构（2026-11-28 第二轮）：取景与手势两大体系拆到 composables/，以「方法组
+ * 对象」形态导出，在此摊进 methods —— Vue 把每个 method 绑定到组件实例，`this`
+ * 语义与原地内联完全一致，纯搬运零行为变化：
+ *   useStageCamera   取景体系（可视区实测 → 视锥对中 → 迭代收敛 → 平滑逼近 → fitStage/fitRoom）
+ *   usePanelGesture  窄屏手势体系（3D 带压缩 → 触摸分发 → 惯性 → 滚轮）
+ * 事件绑定（mounted/beforeUnmount 的 passive 选项成对出现）与场景模式 / 视图开关
+ * 等编排仍留在本组件。 */
+import { stageCameraMethods } from './composables/useStageCamera';
+import { panelGestureMethods } from './composables/usePanelGesture';
+import { useSceneMode } from './composables/useSceneMode';
+import { disposeEngine } from './engine';
 
 /*
  * PanelApp — 控制面板（本产品的主入口页，窄屏 / 宽屏自适应）
@@ -90,6 +87,9 @@ import {
  *   （本页已关掉长按设锚点，见 afterInit）。
  * 两页共用 engine/、stores/、composables/useCards、components/common/cards，
  * 启动序列共用 composables/useStageBoot.js。
+ * 结构重构（2026-11-28 第二轮）：取景体系拆 composables/useStageCamera.js、
+ * 手势体系拆 composables/usePanelGesture.js（方法组摊进 methods），本组件留
+ * 启动编排 / 切层 / 场景模式 / 视图开关 / 卡片与 HA 事件等生命周期强耦合部分。
  */
 
 /* 卡片选中态：本页卡片常驻，点空白回到全屋（不收起） */
@@ -149,8 +149,9 @@ export default {
   },
 
   watch: {
-    /* 选中项 → 3D 高亮（房间地面提色 / 设备圆环），让「卡片里是谁」在场景里也有锚点 */
-    sel(v) { applyPickHi(View3D, v, true); },
+    /* 选中项 → 3D 高亮（房间地面提色 / 设备圆环），让「卡片里是谁」在场景里也有锚点。
+     * 入口统一走 useSceneMode.pickHi（与 EditApp 同底座）。 */
+    sel(v) { this.pickHi(v, true); },
   },
 
   computed: {
@@ -186,6 +187,11 @@ export default {
   },
 
   methods: {
+    /* ------- 职责方法组（composables/ 拆分，见文件头 import 处说明） ------- */
+    ...stageCameraMethods,    // 取景体系（_visibleH / stageMetrics / alignStageView / fitStage / fitRoom / 平滑逼近 …）
+    ...panelGestureMethods,   // 手势体系（_stageEnsure / _setStageH / 触摸分发 / 惯性 / onStageWheel / syncStageBandForViewport）
+    ...useSceneMode.methods,  // 场景模式装配共享底座（toggleLabelsCore / applySceneCore / pickHi / refresh3dQuiet）
+
     /* 启动三段（见 useStageBoot.js）：① 数据 + HA 提前连接 → ② 等非 3D 区域真实上屏
      * → ③ 才进 3D 重建。慢设备上第 ③ 段的同步 rebuild 不再拖住卡片/天气/楼层按钮。 */
     async init() {
@@ -312,226 +318,11 @@ export default {
       applyPickHi(View3D, this.sel, true);
     },
 
-    /* 窄屏「显示区域」= 展示项条（.p-scenes）以上的整块，DOM 实测而不是拿 --p-band 换算：
-       顶栏是浮层、展示项行在白纸上，中间露出的那一段才是真正能看见 3D 的地方。
-       压缩手势改 --p-band 后布局随之重排，这里缓存一次、由改高度的地方置空失效，
-       避免取景迭代 / 平滑器每帧都去强制同步重排。展示项为空时退到 .p-rooms 顶边。 */
-    _visibleH(H, wide) {
-      if (wide) return H;
-      if (this._visH != null) return this._visH;
-      const shell = this._shell || document.querySelector('.p-shell');
-      const anchor = shell && (shell.querySelector('.p-scenes') || shell.querySelector('.p-rooms'));
-      let h = 0;
-      if (anchor && shell) {
-        h = Math.round(anchor.getBoundingClientRect().top - shell.getBoundingClientRect().top);
-      }
-      const band = this._stageFrac != null ? this._stageFrac : STAGE_BAND_INIT;
-      this._visH = h > 40 ? h : Math.max(1, Math.round(H * band));
-      return this._visH;
-    },
-
-    /* 3D 画布铺满整页、尺寸永远不变；「可视区」是白纸羽化层之上还露着的那一条带：
-       宽屏 = 左列（右侧 340 竖栏占掉），窄屏 = 场景列表以上的整块显示区域。
-       手指上滑时白纸及以下整体上移，显示区域随之变矮；这里按上滑量算出剩余高度，
-       让 alignStageView 用 setViewOffset 把房子/房间平移到剩余可视区的正中间，
-       再按剩余高度重新取景 —— 全程只动相机，不动画布、不 resize。 */
-    stageMetrics() {
-      const W = window.innerWidth || 1, H = window.innerHeight || 1;
-      const wide = isWideViewport(W, H);
-      /* 纯计算在 model/panelCamera.js；DOM 实测 / 缓存值从这里注入 */
-      return stageMetricsOf({
-        W, H,
-        visibleH: this._visibleH(H, wide),
-        stageFrac: this._stageFrac,
-        stageMin: this._stageMin,
-        defaultDist: DEFAULT_CAM.dist,
-      });
-    },
-
-    /* 把「画面中心」挪到可视区中心：用相机的 view offset（只平移视锥），
-       不动 camera.position / controls.target —— 旋转中心必须留在房子或房间的正中心，
-       否则自转时房子会绕着旁边一个空点画圈。 */
-    alignStageView() {
-      const m = this.stageMetrics();
-      const cam = View3D.camera;
-      if (!cam) return;
-      /* 第一项 = 把房子从「整页画布中心」平移到「剩余可视区中心」；_fitDy 是包围盒
-         投影重心的透视修正，由平滑器逐帧逼近（见 model/panelCamera.js viewOffsetOf）。 */
-      const { dx, dy } = viewOffsetOf(m, this._fitDy);
-      if (!dx && !dy) {
-        if (cam.clearViewOffset) cam.clearViewOffset();
-        return;
-      }
-      cam.setViewOffset(m.W, m.H, -dx, -dy, m.W, m.H);
-      cam.updateProjectionMatrix();
-    },
-
-    /* 把 box 完整塞进「可视区」所需的相机距离。
-       按当前视角方向把 8 个角投影到屏幕基向量上算实际宽高（不用包围球 ——
-       户型又扁又宽，包围球会把距离算大、房子显小），再按可视区的半角换算。
-       fill = 目标占可视区的比例（0.9 ≈ 铺满九成，四分之三以上）。 */
-    fitDistance(box, dir, fill, depthK) {
-      const T = window.THREE, cam = View3D.camera, m = this.stageMetrics();
-      if (!T || !cam || !box || box.isEmpty()) return m.dist;
-      /* 按当前视角方向把 8 个角投影到屏幕基向量上算实际宽高（不用包围球 ——
-         户型又扁又宽，包围球会把距离算大、房子显小），再交给纯函数换算成视距。 */
-      const fwd = dir.clone().normalize().negate();   // dir 是「目标→相机」，视线取反
-      const upW = Math.abs(fwd.y) > 0.98 ? new T.Vector3(0, 0, 1) : new T.Vector3(0, 1, 0);
-      const right = new T.Vector3().crossVectors(fwd, upW).normalize();
-      const up = new T.Vector3().crossVectors(right, fwd).normalize();
-      const c = box.getCenter(new T.Vector3());
-      const p = new T.Vector3();
-      let hw = 0, hh = 0, hd = 0;
-      for (let i = 0; i < 8; i++) {
-        p.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).sub(c);
-        hw = Math.max(hw, Math.abs(p.dot(right)));
-        hh = Math.max(hh, Math.abs(p.dot(up)));
-        hd = Math.max(hd, Math.abs(p.dot(fwd)));
-      }
-      /* depthK 与半角换算都在 model/panelCamera.js fitDistanceOf（纯函数、可单测） */
-      return fitDistanceOf({
-        hw, hh, hd,
-        fov: cam.fov, contentW: m.contentW, contentH: m.contentH, canvasH: m.H,
-        fill, depthK,
-      });
-    },
-
-    /* 完整显示优先：全屋 / 房间的包围盒必须整个落在显示区内，不能上下裁切。
-       分别算「按宽度填满」「按高度填满」各自的缩放系数，取较大的那个（谁紧谁定大小），
-       另一个方向自然留白 —— 这就是完整可见约束下能达到的最大尺寸。
-       想再大只能抬高 fill：由 fitStage / fitRoom 按 squeeze 渐进把留白压到最少
-       （初始 0.88 → 最矮 0.96），压得越矮房子越贴边但始终不出界。 */
-    fitScale(probe, m, fill) {
-      return fitScaleOf(probe, m, fill);
-    },
-
-    /* 默认取景：按「整栋房子的包围盒」塞满可视区，再把视锥对到可视区中心。
-       animate = true 时用相机飞行过渡（房间 → 全屋 也要有动效，不能硬切）。
-       keepDir = true 时保留用户当前视角方向，只改视距 —— 拖窗口改尺寸时用，
-       否则每拖一像素就回到默认机位，用户的旋转会被吃掉。 */
-    /* 按当前选中范围（全屋 / 某房间）重新取景：断点切换、切层回全屋、拖动改窗口都走这里，
-       保证任何可视区变化后相机都重新「塞满」目标 */
-    refocus(animate, keepDir, smooth) {
-      const sel = this.sel;
-      if (sel && sel.kind === 'room' && sel.id) this.fitRoom(sel.id, animate, smooth);
-      else this.fitStage(animate, keepDir, smooth);
-    },
-
-    /* ---- 平滑取景（拖窗口跟手 / 收尾都走这里，指数逼近不跳变） ----
-       fitStage / fitRoom 算出目标机位后不直接落相机，而是交给 _desireFit：
-       每帧向目标指数逼近（拖动时新目标不断覆盖，画面始终连续），收敛后精确落位。
-       期间关掉 damping / autoRotate（它们会和我们逐帧赋值打架），用户一上手就还原。 */
-    _desireFit(pos, target, dy) {
-      const cam = View3D.camera, ctl = View3D.controls;
-      if (!cam || !ctl) return;
-      if (View3D.cancelFly) View3D.cancelFly();          // 飞行动画让位给平滑逼近
-      if (!this._camGoal) {                               // 首次进入：暂存并关掉交互态
-        this._smoothDamping = ctl.enableDamping;
-        View3D.holdAutoRotate(true);                      // 只是按住，不改意图（收尾按意图恢复）
-        ctl.enableDamping = false;
-      }
-      this._camGoal = { pos: pos.clone(), target: target.clone(), dy: dy || 0 };
-      this._smoothT0 = performance.now();                 // 收尾硬超时的起点（见 _smoothTick）
-      if (!this._smoothRaf) this._smoothRaf = requestAnimationFrame(() => this._smoothTick());
-    },
-
-    _smoothStop(apply) {
-      const ctl = View3D.controls;
-      /* 收尾一律按「用户选择」而不是进入平滑前的快照：平滑期间用户完全可能点了
-         旋转按钮，用快照会把这次选择按回 false（点了没反应）。
-         hold 只在真结束一段平滑时放开，和 _desireFit 一一对应。 */
-      View3D.holdAutoRotate(false);
-      if (ctl && this._camGoal) {
-        View3D.setAutoRotate(this.autoRotate);
-        ctl.enableDamping = this._smoothDamping;
-        if (apply) ctl.update();
-      }
-      this._camGoal = null;
-      if (this._smoothRaf) { cancelAnimationFrame(this._smoothRaf); this._smoothRaf = 0; }
-    },
-
-    _smoothTick() {
-      const g = this._camGoal;
-      const cam = View3D.camera, ctl = View3D.controls;
-      if (!g || !cam || !ctl) { this._smoothRaf = 0; return; }
-      const k = SMOOTH_K;                                 // 每帧按常量比例逼近：跟手且连续
-      cam.position.lerp(g.pos, k);
-      ctl.target.lerp(g.target, k);
-      this._fitDy = (this._fitDy || 0) + (g.dy - (this._fitDy || 0)) * k;
-      this.alignStageView();
-      /* 收敛判定 + 硬超时兜底：`g.dy` 会随可视区变化反复刷新，极端情况下（软键盘/
-         浏览器工具栏收放抖动）收敛条件可能一直不满足，这个循环就会逐帧钉住
-         camera.position —— 用户开了自转也看不出在转。超过 1.5s 直接落位收尾。 */
-      const timedOut = performance.now() - (this._smoothT0 || 0) > 1500;
-      if (timedOut
-        || (cam.position.distanceToSquared(g.pos) < 4e-4
-          && ctl.target.distanceToSquared(g.target) < 1e-4
-          && Math.abs(g.dy - (this._fitDy || 0)) < 0.5)) {
-        cam.position.copy(g.pos);                         // 收敛：精确落位
-        ctl.target.copy(g.target);
-        this._fitDy = Math.round(g.dy);
-        this.alignStageView();
-        this._smoothStop(true);
-        return;
-      }
-      this._smoothRaf = requestAnimationFrame(() => this._smoothTick());
-    },
-
-    /* 取景收敛公共段（fitStage / fitRoom 共用）：
-       起始视距由调用方解析式估初值，这里按「实测投影占比」迭代修正（透视近端放大，
-       解析式在宽屏左列 / 窄屏上带两种可视区下误差不同，直接量投影最省事，收敛很快）；
-       循环结束必须按最终 dist 重算一次 probe —— 否则竖直微调用的是上一轮过期数值
-       （曾经踩过：房间整体偏下 80px）；最后按 smooth（平滑逼近）/ animate（flyTo）/ 瞬跳落位。 */
-    _convergeFit(box, dir, target, dist, minDist, fill, animate, smooth) {
-      const m = this.stageMetrics();
-      let probe = null;
-      for (let i = 0; i < 6; i++) {
-        probe = this.probeBox(box, dir, target, dist);
-        if (!probe) break;
-        const r = this.fitScale(probe, m, fill);
-        if (Math.abs(r - 1) < 0.03) break;
-        dist = Math.max(minDist, dist * r);
-      }
-      probe = this.probeBox(box, dir, target, dist) || probe;
-      /* 竖直微调：让实测的包围盒中心落在可视区中心（透视下近端下沉的那部分补回来） */
-      const dy = probe ? -Math.round(probe.cy - m.H / 2) : 0;
-      const pos = target.clone().addScaledVector(dir, dist);
-      if (smooth) { this._desireFit(pos, target, dy); return; }   // 平滑逼近，不瞬跳
-      this._fitDy = dy;
-      if (animate && View3D.flyTo) View3D.flyTo(pos, target, 760);
-      else View3D.frame({ pos: [pos.x, pos.y, pos.z], target: [target.x, target.y, target.z] });
-      this.alignStageView();
-    },
-
-    fitStage(animate, keepDir, smooth) {
-      const m = this.stageMetrics();
-      const T = window.THREE;
-      this._smoothStop(false);           // 新取景开始：停掉正在进行的平滑逼近，避免两套相机写入打架
-      this._narrow = !m.wide;
-      const cam = View3D.camera, ctl = View3D.controls;
-      let dir;
-      if (keepDir && cam && ctl) {
-        dir = cam.position.clone().sub(ctl.target);
-        if (dir.lengthSq() < 1e-6) dir.set(DEFAULT_CAM.dir[0], DEFAULT_CAM.dir[1], DEFAULT_CAM.dir[2]);
-      } else {
-        dir = new T.Vector3(DEFAULT_CAM.dir[0], DEFAULT_CAM.dir[1], DEFAULT_CAM.dir[2]);
-      }
-      dir.normalize();
-      const box = (T && View3D.root) ? new T.Box3().setFromObject(View3D.root) : null;
-      if (!box || box.isEmpty()) {
-        View3D.frame({ dir: DEFAULT_CAM.dir, dist: m.dist });
-        this.alignStageView();
-        return;
-      }
-      const c = box.getCenter(new T.Vector3());
-      const target = new T.Vector3(c.x, c.y + 0.5, c.z);
-      let dist = this.fitDistance(box, dir, 0.95);
-      /* 画布高度随压缩变化，解析式在这两种比例下误差不同；统一走 _convergeFit 实测迭代。
-         fill 渐进抬高（窄屏压缩越狠填充越满）；最高 0.96 留 4% 安全边距，
-         吸收透视近端放大与居中取整误差，绝不顶出边界。 */
-      const fill = m.wide ? FILL_STAGE_WIDE : FILL_STAGE_INIT + FILL_STAGE_GAIN * m.squeeze;
-      this._convergeFit(box, dir, target, dist, 1, fill, animate, smooth);
-    },
+    /* ------- 取景体系 -------
+     * _visibleH / stageMetrics / alignStageView / fitDistance / fitScale / refocus /
+     * _desireFit / _smoothStop / _smoothTick / _convergeFit / fitStage / probeBox / fitRoom
+     * 已拆到 composables/useStageCamera.js（文件头 import 处摊进 methods）。
+     * 纯计算前置在 model/panelCamera.js（可 Node 单测），副作用壳在 composable。 */
 
     /* 点房间 = 选中出卡 + 相机飞过去；全屋 = 所有房间卡 + 默认取景。
        不用引擎的 View3D.focusRoom：它按「整块画布」算视距和中心，而我们这里是整页画布 + 剩余可视区，
@@ -546,60 +337,7 @@ export default {
       this.fitRoom(id, true);
     },
 
-    /* 临时相机试算：把包围盒 8 个角投影到画布，返回屏幕上的宽高与中心。
-       为什么要试算：透视会让近端放大，解析公式在「宽屏左列」和「窄屏上带」两种
-       可视区下误差比例不一样（同一套系数没法两边都对），直接量投影最省事。 */
-    probeBox(box, dir, target, dist) {
-      const T = window.THREE, cam = View3D.camera, m = this.stageMetrics();
-      if (!T || !cam) return null;
-      const c = cam.clone();
-      if (c.clearViewOffset) c.clearViewOffset();     // 视锥偏移只改画面位置，不影响尺寸，先清掉
-      c.position.copy(target).addScaledVector(dir, dist);
-      c.up.set(0, 1, 0);
-      c.lookAt(target);
-      c.updateMatrixWorld(true);
-      c.updateProjectionMatrix();
-      const p = new T.Vector3();
-      const points = [];
-      for (let i = 0; i < 8; i++) {
-        p.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).project(c);
-        points.push({ x: p.x, y: p.y });
-      }
-      return screenBoundsOf(points, m.W, m.H);
-    },
-
-    /* 房间取景：迭代把房间包围盒「投影占比」校到填充率（宽/高谁是限制项由 fitScale 判），
-       并按实测中心做竖直微调。
-       不用引擎的 View3D.focusRoom：它按整块画布算视距和中心，这里是整页画布 + 剩余可视区。 */
-    fitRoom(id, animate, smooth) {
-      const T = window.THREE;
-      this._smoothStop(false);           // 新取景开始：停掉正在进行的平滑逼近
-      const mesh = T && View3D.roomPickGroups
-        ? View3D.roomPickGroups.find((x) => x.userData.room && x.userData.room.id === id)
-        : null;
-      const cam = View3D.camera, ctl = View3D.controls;
-      if (!mesh || !cam || !ctl) { View3D.focusRoom(id); return; }   // 兜底：交给引擎
-
-      const m = this.stageMetrics();
-      const box = new T.Box3().setFromObject(mesh);
-      /* 房间拾取体只是地板，墙是另外的网格：把墙高补进包围盒，
-         否则按地板取景时四周墙面会被顶出画面（看着像镜头扎进房间里）。 */
-      box.max.y = Math.max(box.max.y, box.min.y + (View3D.wallH || 2.8));
-      const ctr = box.getCenter(new T.Vector3());
-      /* 观察点 = 房间中心（旋转中心/自转锚点跟着它，不再用长按设的自定义锚点） */
-      const target = new T.Vector3(ctr.x, ctr.y, ctr.z);
-      const dir = cam.position.clone().sub(ctl.target);
-      if (dir.lengthSq() < 1e-6) dir.set(DEFAULT_CAM.dir[0], DEFAULT_CAM.dir[1], DEFAULT_CAM.dir[2]);
-      dir.normalize();
-      if (dir.y < 0.45) { dir.y = 0.45; dir.normalize(); }           // 太贴水平会看不见房间内部
-
-      /* 起始距离用解析式估个初值，收敛与竖直微调统一走 _convergeFit。
-         depthK 用默认 0.6（房间是透视盒，深度补偿要足，见 panelCamera.js fitDistanceOf
-         的注释）—— 初值只影响迭代轮数，probe 会双向修正到实测占比。 */
-      const fill = m.wide ? FILL_ROOM_WIDE : FILL_ROOM_WIDE + FILL_ROOM_GAIN * m.squeeze;
-      const dist = this.fitDistance(box, dir, 0.8, 0.6);
-      this._convergeFit(box, dir, target, dist, 0.8, fill, animate, smooth);
-    },
+    /* 临时相机试算 probeBox 与房间取景 fitRoom 也已拆到 composables/useStageCamera.js。 */
 
     async onCardAct(node, value) {
       try {
@@ -611,9 +349,10 @@ export default {
     },
 
     onHAChange() {
-      /* 实体版本由 bridge.js 统一写进 ha store，派生 computed 自动重算，本页不再自己 ++ */
+      /* 实体版本由 bridge.js 统一写进 ha store，派生 computed 自动重算，本页不再自己 ++。
+       * 静默重绘底座（useSceneMode.refresh3dQuiet，审计 2.17 补齐漂移的 try/catch）。 */
       this.checkSceneWatchers();
-      View3D.refresh();
+      this.refresh3dQuiet(() => View3D.refresh());
     },
 
     /* ---------------- 场景执行 ----------------
@@ -650,14 +389,13 @@ export default {
     },
 
     toggleLabels() {
-      this.showLabels = !this.showLabels;
-      /* 标签显隐 ⇔ 点击语义，必须一起切（见 model/pick.js 的 applySceneMode）。
-         窄屏由 applyStageMode 强制不给标签，开关本身也在 CSS 里隐藏。 */
-      this.applyStageMode();
-      prefSetBool(PREF_KEYS.panelShowLabels, this.showLabels);   // 展示页独立键，与编辑页互不影响
-      this.toastMsg(this.showLabels
-        ? '已显示标签：点标签执行，点设备查看卡片'
-        : '已隐藏标签：点设备执行动作');
+      /* 标签开关骨架（翻转/持久化/重拨顺序单一出处，审计 2.17）：
+       * 展示页独立键 panelShowLabels，与编辑页互不影响。 */
+      this.toggleLabelsCore(PREF_KEYS.panelShowLabels,
+        () => this.applyStageMode(),
+        () => this.toastMsg(this.showLabels
+          ? '已显示标签：点标签执行，点设备查看卡片'
+          : '已隐藏标签：点设备执行动作'));
     },
 
     fullscreen() {
@@ -671,309 +409,22 @@ export default {
       this._toastTimer = setTimeout(() => { this.toast = ''; }, ms || 1600);
     },
 
-    /* ---------------- 窄屏：3D 可视带可被上滑压缩 ----------------
-       初始高度沿用 CSS 的 --p-band(.38)；手指上滑时按 1:1 跟随压缩，压到最小高度后
-       剩余手势交给 .p-cards-body 原生滚动；下滑时反向：卡片先滚回顶部，再放开 3D 带。
-       高度只改一个 CSS 变量：网格行、白纸羽化起点、楼层按钮、构图(stageMetrics)都读它。 */
+    /* ------- 手势体系 -------
+     * _stageEnsure / _setStageH / _bandRefocus / syncStageBandForViewport /
+     * onStageTouchStart / _sampleMove / onStageTouchMove / _stageGesture /
+     * onStageTouchEnd / onStageTouchCancel / _endStageGesture / _flingStop /
+     * _startFling / _flingFinish / onStageWheel
+     * 已拆到 composables/usePanelGesture.js（文件头 import 处摊进 methods）。
+     * 事件绑定仍在 mounted/beforeUnmount（passive 选项成对出现）；
+     * 纯计算前置在 model/panelGesture.js / model/tapGesture.js（可 Node 单测）。 */
 
-    _stageEnsure() {
-      const H = window.innerHeight || 1;
-      const shell = document.querySelector('.p-shell');
-      if (!shell) return false;
-      this._shell = shell;
-      this._cards = shell.querySelector('.p-cards-body') || null;
-      const { max, min } = stageBounds(H);
-      if (this._stageMax !== max || this._stageMin !== min) {
-        const frac = this._stageFrac || STAGE_BAND_INIT;
-        this._stageMax = max;
-        this._stageMin = min;
-        this._stageH = Math.max(min, Math.min(max, Math.round(H * frac)));
-        this._stageFrac = this._stageH / H;   // 视口高度变了也保持 JS 与 CSS 同一个占比
-      }
-      return true;
-    },
-
-    /* 上滑只改 --p-band：白纸羽化层及以下整体上移，3D 画布尺寸不变、不 resize。
-       _stageFrac 是上滑量换算出的「剩余可视高度占比」；stageMetrics 据此实测显示区域，
-       用代码把房子平移过去并按新的宽高比重取景 —— 全程只动相机。 */
-    _setStageH(px, quick) {
-      const H = window.innerHeight || 1;
-      const h = Math.max(this._stageMin, Math.min(this._stageMax, Math.round(px)));
-      if (h === this._stageH) return false;
-      this._stageH = h;
-      this._stageFrac = h / H;
-      if (this._shell) this._shell.style.setProperty('--p-band', String(this._stageFrac));
-      this._visH = null;                   // 白纸/场景行位置变了：下一帧重新实测显示区域
-      /* quick = 惯性阶段：每帧都 alignStageView + refocus 会在手机上掉帧，
-         这里只改 CSS 变量，惯性收尾时由 _flingFinish() 统一补一次构图。 */
-      if (quick) { this._bandDirty = true; return true; }
-      this._bandRefocus();
-      return true;
-    },
-
-    /* 重取景统一入口（_bandRaf 防抖：同帧多次改高度只算一次） */
-    _bandRefocus() {
-      this._bandDirty = false;
-      if (this._bandRaf) return;
-      this._bandRaf = requestAnimationFrame(() => {
-        this._bandRaf = 0;
-        this.alignStageView();            // 房子中心 1:1 跟手挪到新的显示区中心
-        this.refocus(false, true, true);  // 平滑重取景：保留方向，按新宽高比调填充率
-      });
-    },
-
-    /* 断点/视口变化：浏览器宽屏清掉内联变量（宽屏布局不用这条带）；
-       app 宽屏（TV 模式）虽也清带，但要保留 JS 手势所需的 _cards 引用。 */
-    syncStageBandForViewport() {
-      this._visH = null;                   // 断点/视口变化：显示区域 DOM 位置要重测
-      if (this.wide) {
-        this._flingStop();                   // 断点变了：JS 接管的手势/惯性都不再适用
-        if (this._shell) this._shell.style.removeProperty('--p-band');
-        /* app 宽屏仍由 JS 接管卡片滚动（jsGesture 含 inApp），必须让 _cards 指向
-           新的 .p-cards-body，否则滚卡片时容器是 null，表现就是「滑不动」。 */
-        if (this.inApp && this._stageEnsure()) return;
-        return;
-      }
-      if (!this._stageEnsure()) return;
-      const H = window.innerHeight || 1;
-      /* 与 stageMetrics 共用同一个「剩余高度占比」，CSS 白纸位置与相机构图不会各算一套 */
-      const frac = (this._stageH || this._stageMax) / H;
-      this._stageFrac = frac;
-      this._shell.style.setProperty('--p-band', String(frac));
-    },
-
-    onStageTouchStart(e) {
-      /* 任何新的触摸（包括点按卡片控件）都先打断惯性 —— 原生列表也是「按住即停」 */
-      this._flingStop();
-      /* 新的一轮触摸：清掉上一次的「已滚动」标记。v-tap 的 pointerdown 早于
-         touchstart，它快照的是惯性状态，两处时序互不干扰。 */
-      beginGesture();
-      if (!this.jsGesture || !e.touches || e.touches.length !== 1) return;
-      const shell = (e.target instanceof Element) ? e.target.closest('.p-shell') : null;
-      if (!shell) return;
-      /* 卡片滑块（CardRange.vue 自绘 range）只放行「按在把手上」的触摸：命中半径读
-         .dc-slider 的 data-hit，与组件同一个值。按在轨道其它位置不响应、也不改值，
-         仍要交回页面手势滚卡片，所以不能整块放行；禁用态同样交回。 */
-      const sl = (e.target instanceof Element) ? e.target.closest('.dc-slider') : null;
-      if (sl && sl.getAttribute('aria-disabled') !== 'true') {
-        const th = sl.querySelector('.dc-thumb');
-        const r = th && th.getBoundingClientRect();
-        const t0 = e.touches && e.touches[0];
-        const hit = Number(sl.dataset.hit || 20);
-        if (r && t0 && Math.abs(t0.clientX - (r.left + r.width / 2)) <= hit) {
-          this._gesture = null;
-          return;
-        }
-      }
-      /* 卡片选项组（CardChoice.vue 窄屏滑动版）：组件只在「窄屏 + 可用」时给
-         .dc-choice 挂 data-slide，命中即代表它已用 pointer 事件接管这一组；
-         整块放行，否则横向 touchmove 会被判成场景横滚并 preventDefault，永远滑不动。
-         禁用态 / 宽屏没有该属性，触摸照常交回页面手势滚卡片。 */
-      if (e.target instanceof Element && e.target.closest('.dc-choice[data-slide]')) {
-        this._gesture = null;
-        return;
-      }
-      if (!this._stageEnsure()) return;
-      const t = e.touches[0];
-      /* 只接管「羽化渐变层及其以下」：羽化层起点 = 3D 带下沿往上 18px
-         （与 CSS .p-shell::after 的 top 一致）。上面那块 3D 区完全不接管，
-         手指照样交给 OrbitControls 旋转。 */
-      this._gesture = null;
-      if (this.wide) {
-        /* app 宽屏（TV 模式）：3D 铺满左栏、卡片在右竖栏，没有「3D 带下沿」这条线。
-           只接管右栏（卡片 / 场景条 / 房间条）上的手势；左栏 3D 照旧交 OrbitControls。
-           命中不足时（如点在中缝）宁可不接管，交原生也不出错。 */
-        const right = (e.target instanceof Element)
-          ? e.target.closest('.p-cards, .p-scenes, .p-rooms') : null;
-        if (!right) return;
-      } else if (t.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) {
-        /* 窄屏：羽化渐变层及其以下才接管；起点 = 3D 带下沿往上 18px
-           （与 CSS .p-shell::after 的 top 一致），上面的 3D 区交 OrbitControls。 */
-        return;
-      }
-      this._gesture = {
-        x0: t.clientX, y0: t.clientY, lastX: t.clientX, lastY: t.clientY,
-        mode: '',
-        hScroll: e.target.closest('.p-scenes, .p-room-track') || null,
-        /* 速度采样：每段位移 + 时间戳，只在抬手时用来算 fling 初速度 */
-        samples: [], lastMoveT: 0,
-      };
-    },
-
-    /* 记录一段位移采样，队列只留最近 FLING_WINDOW_MS（抬手前的减速/停顿能如实反映） */
-    _sampleMove(g, move) {
-      const now = (typeof performance !== 'undefined' && performance.now)
-        ? performance.now() : Date.now();
-      g.lastMoveT = sampleMove(g.samples, move, now);
-    },
-
-    onStageTouchMove(e) {
-      const g = this._gesture;
-      if (!g || !this.jsGesture || !e.touches || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      /* 与 v-tap 共用同一个 8px 阈值：累计位移越过阈值才把本次触摸写成「滚动」。
-         不能用下面 g.mode 的 4/6px 方向判定 —— 那会让轻点时的手抖把按钮一起否决。 */
-      if (tapExceedsMove(g.x0, g.y0, t.clientX, t.clientY)) markGestureMoved();
-      if (!g.mode) {
-        const dx = Math.abs(t.clientX - g.x0), dy = Math.abs(t.clientY - g.y0);
-        if (dx > 6 && dx > dy) g.mode = 'h';
-        else if (dy > 4) g.mode = 'v';
-        else return;
-        g.lastX = t.clientX; g.lastY = t.clientY;   // 判定完再计增量，第一下不会突然跳一截
-      }
-      if (g.mode === 'h') {                          // 横向：展示项 / 房间横滚仍归原生容器（手动分发）
-        const dx = g.lastX - t.clientX;
-        g.lastX = t.clientX; g.lastY = t.clientY;
-        if (g.hScroll) g.hScroll.scrollLeft += dx;
-        this._sampleMove(g, dx);
-        if (e.cancelable) e.preventDefault();
-        return;
-      }
-      const dy = g.lastY - t.clientY;                // >0 上滑
-      g.lastX = t.clientX; g.lastY = t.clientY;
-      if (dy) {
-        this._stageGesture(dy);
-        this._sampleMove(g, dy);
-      }
-      if (e.cancelable) e.preventDefault();          // touch-action:none 下只是保险，避免系统回弹
-    },
-
-    /* 纵向增量分发（同一手势内跨阶段连续）：
-       窄屏上滑先压 3D 带，压到最小后把剩余位移喂给卡片滚动；下滑反向。
-       app 宽屏（TV 模式）没有可压缩的带（3D 铺满左栏、卡片在右竖栏），
-       位移全部直接喂给卡片滚动 —— 否则用户上滑卡片时会去改一个不存在的带，
-       卡片纹丝不动（本次修复）。 */
-    _stageGesture(dy, quick) {
-      const body = this._cards;
-      if (this.wide) {
-        if (body && dy) body.scrollTop += dy;
-        return;
-      }
-      /* 纯拆分在 model/panelGesture.js（可单测）：算出目标 3D 带高度与 scrollTop，
-         这里只负责把结果写回 CSS 变量 / 滚动容器 */
-      const r = splitVerticalGesture(dy, {
-        stageH: this._stageH, stageMin: this._stageMin, stageMax: this._stageMax,
-        scrollTop: body ? body.scrollTop : 0, hasBody: !!body,
-      });
-      if (r.band !== this._stageH) this._setStageH(r.band, quick);
-      if (body && r.scroll !== body.scrollTop) body.scrollTop = r.scroll;
-    },
-
-    /* 抬手：按最近一段手势的速度起一段惯性，补回被 touch-action:none 关掉的 momentum。
-       touchcancel（来电 / 系统打断手势）不甩。 */
-    onStageTouchEnd(e) { this._endStageGesture(true, e); },
-    onStageTouchCancel(e) { this._endStageGesture(false, e); },
-
-    _endStageGesture(allowFling, e) {
-      const g = this._gesture;
-      this._gesture = null;
-      /* 过渡保险：确实滚动过的手势，在 touchend 压住浏览器补发的合成 click。
-         v-tap 已在 pointerdown 从源头 preventDefault（根治），这里只兜住尚未迁移的
-         裸 click 与各 WebView 的兼容性事件差异；正常轻点手势不受影响。
-         mounted 里 touchend 必须是 passive:false，否则这里的 preventDefault 无效。 */
-      if (e && e.type === 'touchend' && e.cancelable && gestureState.moved) {
-        const t = e.target;
-        if (t instanceof Element && t.closest('.p-shell')) e.preventDefault();
-      }
-      if (!allowFling || !this.jsGesture || !g || !g.mode) return;
-      const now = (typeof performance !== 'undefined' && performance.now)
-        ? performance.now() : Date.now();
-      /* 慢慢拖到位、停住再松手 → 不该再滑一段；采样窗口 / 限速 / 阈值都在纯函数里 */
-      const v = flingVelocity(g.samples, now, g.lastMoveT);
-      if (!v) return;
-      this._startFling(g, v);
-    },
-
-    _flingStop() {
-      if (this._flingRaf) { cancelAnimationFrame(this._flingRaf); this._flingRaf = 0; }
-      setFlingRunning(false);
-    },
-
-    /* 惯性主体：每帧把「速度 × 帧时长」喂给同一套分发逻辑（3D 带 → 卡片），
-       速度指数衰减；到顶/到底立刻停，不回弹。
-       纵向走 _stageGesture(..., true)：惯性阶段不逐帧重取景，收尾补一次即可。 */
-    _startFling(g, v0) {
-      this._flingStop();
-      const horizontal = g.mode === 'h';
-      const el = horizontal ? g.hScroll : this._cards;
-      if (!el) return;
-      setFlingRunning(true);
-      let v = v0, last = 0;
-      const step = (now) => {
-        /* 首帧按一整帧时长算，否则 last=0 会算出 dt≈1ms，位移太小被误判成「到边界」 */
-        const dt = flingFrameDt(now, last);
-        last = now;
-        const before = horizontal ? el.scrollLeft : el.scrollTop;
-        const h0 = this._stageH;
-        const move = v * dt;
-        if (horizontal) el.scrollLeft = before + move;
-        else this._stageGesture(move, true);
-        const moved = horizontal
-          ? Math.abs(el.scrollLeft - before)
-          : Math.abs((this._cards ? this._cards.scrollTop : 0) - before) + Math.abs(this._stageH - h0);
-        if (moved < 0.2) { this._flingFinish(); return; }  // 到边界
-        v = nextFlingVelocity(v, dt);
-        if (Math.abs(v) < 0.02) { this._flingFinish(); return; }
-        this._flingRaf = requestAnimationFrame(step);
-      };
-      this._flingRaf = requestAnimationFrame(step);
-    },
-
-    _flingFinish() {
-      this._flingRaf = 0;
-      setFlingRunning(false);
-      /* 惯性期间若压过 / 放开过 3D 带：跟手阶段是逐帧构图，这里收尾补最后一次 */
-      if (this._bandDirty) this._bandRefocus();
-    },
-
-    /* 滚轮：宽屏（PC 浏览器 / app TV 模式）与窄屏都主动接管，把纵向滚轮喂给
-       卡片滚动 —— 这是 PC 宽屏支持鼠标滚轮的关键（不能像触摸那样按 jsGesture
-       把浏览器宽屏放掉，否则滚轮只滚到 .p-shell 的 overflow:hidden 就到头了）。
-       与触摸的区别只在判据：触摸交不交原生看 jsGesture，滚轮一律自己来。
-       例外：鼠标停在横滚条（展示项 / 房间）上时，纵向滚轮只喂该条的 scrollLeft，
-       条有溢出就整段吞掉（滚到边也不落到卡片，否则滚房间时卡片会跟着乱跳），
-       放得下的条才回落到卡片。与触摸横滚用同一份元素白名单。 */
-    onStageWheel(e) {
-      const shell = (e.target instanceof Element) ? e.target.closest('.p-shell') : null;
-      if (!shell) return;
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // 横向滚轮放行给横滚容器
-      /*          横滚条优先：竖向滚轮映射到 scrollLeft；条滚到边（handled=false）再往下走卡片。
-         用 scrollWidth/clientWidth 判断真实溢出，元素放得下时不吞滚轮。 */
-      if (e.deltaY) {
-        const hs = (e.target instanceof Element)
-          ? e.target.closest('.p-scenes, .p-room-track') : null;
-        if (hs) {
-          const r = wheelHScroll(e.deltaY, hs);
-          if (r.handled) {
-            hs.scrollLeft = r.scrollLeft;
-            if (e.cancelable) e.preventDefault();
-            return;
-          }
-        }
-      }
-      if (!this._stageEnsure()) return;
-      if (this.wide) {
-        /* app 宽屏：滚轮也只接管右栏（卡片 / 场景 / 房间），左栏留给 OrbitControls */
-        const right = (e.target instanceof Element)
-          ? e.target.closest('.p-cards, .p-scenes, .p-rooms') : null;
-        if (!right) return;
-      } else if (e.clientY - shell.getBoundingClientRect().top < (this._stageH || this._stageMax) - 18) {
-        /* 窄屏：3D 带内不接管，滚轮留给 OrbitControls 缩放 */
-        return;
-      }
-      if (e.deltaY) this._stageGesture(e.deltaY);
-      if (e.cancelable) e.preventDefault();
-    },
-
-    /* 3D 场景模式：标签显隐 ⇔ 点击语义（与 EditApp 共用 applySceneMode）。
+    /* 3D 场景模式：标签显隐 ⇔ 点击语义（与 EditApp 共用 useSceneMode 底座）。
        唯一特例：index 窄屏强制隐藏标签（顶栏标签开关在窄屏也隐藏），于是自然落到
        「点设备 = 直接执行动作」；宽屏按本机 showLabels 偏好决定，关掉标签同样是执行。 */
     applyStageMode() {
       const narrow = !isWideViewport(window.innerWidth, window.innerHeight);
-      this._stageNarrow = narrow;
       const labels = !narrow && this.showLabels;
-      syncSceneMode(View3D, labels, (hit) => this.onPick3D(hit));
-      if (!labels) applyPickHi(View3D, null, false);   // 没有点选出卡，场景里不该留选中环
+      this.applySceneCore(labels, labels ? this.sel : null);
       if (narrow) {
         /* 旋转照常保留：压缩手势只接管羽化层及其以下（见 onStageTouchStart 的分区判定）。
            显式置 true 也清掉旧版本可能残留在运行页面里的 enableRotate=false。 */
@@ -1044,6 +495,9 @@ export default {
     if (this._bandRaf) cancelAnimationFrame(this._bandRaf);
     clearTimeout(this._toastTimer);
     this.disposeScenes();          // 场景回执轮询 / ✓ 反馈定时器由共用状态机统一清理
+    /* 引擎级卸载出口（审计 3.7）：渲染 RAF / resize / HA change / debug 定时器等
+     * 模块级监听此前只有注册没有移除，两页根组件卸载时统一收口 */
+    disposeEngine();
   },
 };
 </script>

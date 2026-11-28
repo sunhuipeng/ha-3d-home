@@ -3,7 +3,7 @@
  *
  * 为什么不是 './package.json' 或 '../package.json'：
  *   web/package.json 是前端子工程自己的版本，而应用版本号的唯一出处是
- *   仓库根 ha-3d-home/package.json（版本号以该文件为准，push:image.sh 会自动升它）。
+ *   仓库根 ha-3d-home/package.json（版本号以该文件为准，image:nas / image:public 会自动升它）。
  *   本文件位于 web/src/，因此 '../../package.json' 才是根文件。
  *
  * 相比旧的 engine/version.js：不再运行时 fetch('/api/version')、不再挂

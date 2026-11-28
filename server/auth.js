@@ -44,7 +44,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const core = require('./shared');
-const { sendJSON, json, wrap, requestURL, normPathname, readBody, log, logErr } = core;
+const { json, wrap, requestURL, normPathname, readBody, log, logErr } = core;
 
 const COOKIE = 'ha3d_session';
 const USER = String(process.env.HA3D_AUTH_USER || '').trim();
@@ -265,7 +265,8 @@ function sendWithCookie(res, code, obj, setCookie) {
    · /custom/*（用户私有资产）→ 401 纯文本
    · 其余静态资源 → 放行：登录页自身是 Vite 入口，它的 JS/CSS 在 /static/*（生产），
      必须能匿名加载，否则未登录访问 /login.html 会白屏。bundle/字体/内置 assets
-     都不含敏感数据；真正敏感的 HA 令牌在项目数据里，只经 /api/* 暴露，已受保护。 */
+     都不含敏感数据；HA 长期令牌由服务端代管（ha-proxy.js），不下发给浏览器，
+     项目数据只经 /api/* 暴露，已受保护。 */
 const PAGE_RE = /^\/(index|edit)(\/|\.html?$|$)/;
 function isPage(p) {
   if (p === '/' || p === '') return true;
@@ -295,13 +296,17 @@ function guard(req, res, next) {
   if (!enabled) return next();
   if (req.method === 'OPTIONS') return next();  // CORS 预检交给下游（仍返回 405）
   /* 门禁判断必须用解码归一后的路径：new URL().pathname 不解码 %xx，
-   * /%63ustom/... 会绕过 /custom/ 前缀判断（与静态层共用 normPathname）。 */
+   * /%63ustom/... 会绕过 /custom/ 前缀判断（与静态层共用 normPathname）。
+   * 再统一小写口径：Windows/macOS 文件系统大小写不敏感，/EDIT.HTML 与 /edit.html
+   * 是同一个文件，门禁若区分大小写就会被大写变体绕过（生产 Linux 上小写化
+   * 只会让未匹配路径更早拦下，无副作用）。 */
   const u = requestURL(req);
   const p = normPathname(u);
-  if (p === '/login.html' || isPublicApi(p, req.method)) return next();
+  const pl = p.toLowerCase();
+  if (pl === '/login.html' || isPublicApi(pl, req.method)) return next();
   if (sessionCheck(req, res)) return next();
 
-  if (isPage(p)) {
+  if (isPage(pl)) {
     const nextPath = p + (u.search || '');
     res.writeHead(302, {
       'Location': '/login.html?next=' + encodeURIComponent(nextPath),
@@ -309,9 +314,9 @@ function guard(req, res, next) {
     });
     return res.end();
   }
-  if (p.startsWith('/api/')) return sendJSON(res, 401, { error: '请先登录', needLogin: true });
+  if (pl.startsWith('/api/')) return json(res, 401, { error: '请先登录', needLogin: true });
   /* 用户自定义资产（家具 GLB / 插件 / catalog）是私有数据，未登录不放行 */
-  if (p.startsWith('/custom/')) {
+  if (pl.startsWith('/custom/')) {
     res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end('401 Unauthorized');
   }
@@ -478,4 +483,4 @@ loadSessions();
  * 页面自身的 HTTP 请求随后会把 cookie 续掉；WS 断线重连时也会重新走这里。 */
 function check(req) { return enabled ? sessionCheck(req, null) : true; }
 
-module.exports = { enabled, guard, routes, COOKIE, check };
+module.exports = { guard, routes, check };

@@ -3,17 +3,19 @@
        服务名 / 参数 / 目标实体全在插件声明里，按钮只负责 emit。
        没写 action 时与 CardToggle 一致禁用，避免出一个点不动的假按钮。
        点按走 v-tap：窄屏滚动后不会被浏览器补发的 click 误触发。 -->
-  <button class="dc-btn" :disabled="node._disabled || !node.action" v-tap="fire">
+  <button class="dc-btn" :disabled="dis" v-tap="fire">
     {{ node.label || '执行' }}
   </button>
 </template>
 
 <script>
 import { vTap } from '../../../composables/useTap.js';
+import { cardDisabled } from './cardMixins';
 
 export default {
   name: 'CardButton',
   directives: { tap: vTap },
+  mixins: [cardDisabled],
   props: { node: { type: Object, required: true } },
   emits: ['act'],
   methods: {

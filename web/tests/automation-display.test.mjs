@@ -48,6 +48,33 @@ test('safeSvgHtml：剥事件属性 / script / foreignObject / image / use / jav
   assert.equal(safeSvgHtml('x'.repeat(13000)), '');
 });
 
+test('safeSvgHtml 绕过固化：无引号事件属性 / 未闭合 script / 连写事件属性（4-应用.12 回归）', () => {
+  // ① 无引号事件属性：旧正则要求引号，onload=evil() 不剥
+  const unquoted = safeSvgHtml('<svg viewBox="0 0 8 8"><rect onload=evil() width="8"/></svg>');
+  assert.ok(!/onload/i.test(unquoted), '无引号 onload 必须剥掉');
+  assert.match(unquoted, /<rect[^>]*width="8"/, '其余属性保留');
+
+  // ② 未闭合 <script>：旧正则要求闭合标签，脚本内容原样保留
+  const unclosed = safeSvgHtml('<svg><script>alert(1)<path d="M0 0"/></svg>');
+  assert.ok(!/<script/i.test(unclosed), '未闭合 script 必须剥掉');
+  assert.ok(!/alert/.test(unclosed), '脚本内容不得残留');
+
+  // ③ 连写属性：删掉前一个 onload="x" 才暴露 onerror=y，单遍替换会漏
+  const chained = safeSvgHtml('<svg onload="x"onerror=alert(1) viewBox="0 0 8 8"></svg>');
+  assert.ok(!/\son[a-z]+\s*=/i.test(chained), '连写事件属性必须全部剥掉');
+
+  // ④ 未闭合 foreignObject 同口径剥到末尾
+  const fo = safeSvgHtml('<svg><foreignObject><img src=x><path d="M0 0"/></svg>');
+  assert.ok(!/foreignObject|<img/i.test(fo), '未闭合 foreignObject 必须剥掉');
+
+  // ⑤ 空值事件属性 onerror= 与大小写变体
+  const empty = safeSvgHtml('<svg onerror= OnLoad=alert(1) ></svg>');
+  assert.ok(!/\son[a-z]+\s*=/i.test(empty), '空值/大小写混合事件属性必须剥掉');
+
+  // ⑥ 正常 SVG 不受影响
+  assert.equal(safeSvgHtml(SVG), SVG);
+});
+
 test('displayActionOf：automation 项按 kind 分派到代理，域不再从短码猜', () => {
   const act = displayActionOf({ eid: 'abc123', kind: 'automation', name: 'X' });
   assert.deepEqual(act, { domain: 'automation', service: 'trigger', toggle: false, proxy: true });
